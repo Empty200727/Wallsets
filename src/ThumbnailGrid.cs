@@ -16,13 +16,17 @@ internal sealed class ThumbnailGrid : ScrollableControl
     readonly Dictionary<string, PointF> positions = new(StringComparer.OrdinalIgnoreCase);
     readonly System.Windows.Forms.Timer animation = new() { Interval = 16 };
     readonly ToolTip tooltip = new();
+    // Tiles per row in a maximized main window for each size: small, medium, large, extra large.
+    public static readonly int[] ColumnsWhenMaximized = [12, 9, 6, 4];
     List<ThumbnailItem> items = [];
     List<ThumbnailItem>? preview;
     string? selected, dragged, hovered, playing;
     Point press, pointer, grab;
     bool dragging, committing;
-    int sizeIndex = 1;
+    int sizeIndex = 1, tileWidth;
+    Font? iconFont, subFont;
     public event EventHandler? OrderChanged;
+    public event EventHandler? SizeIndexChanged;
     public event EventHandler? ItemActivated;
     public IReadOnlyList<ThumbnailItem> Items => items;
     public string? SelectedPath => selected;
@@ -31,12 +35,12 @@ internal sealed class ThumbnailGrid : ScrollableControl
     public int SelectedIndex { get => items.FindIndex(i => i.Path == selected); set { selected = value >= 0 && value < items.Count ? items[value].Path : null; Invalidate(); } }
     float ScaleFactor => DeviceDpi / 96f;
     int Gap => (int)(10 * ScaleFactor);
-    int TileWidth => (int)(new[] { 100, 132, 180, 236 }[sizeIndex] * ScaleFactor);
+    int TileWidth => tileWidth > 0 ? tileWidth : tileWidth = MeasureTileWidth();
     int TileHeight => (int)(TileWidth * 9f / 16) + (int)(53 * ScaleFactor);
     public int Columns => Math.Max(1, (ClientSize.Width - Gap) / (TileWidth + Gap));
     List<ThumbnailItem> VisualItems => preview ?? items;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public int SizeIndex { get => sizeIndex; set { CancelDrag(); sizeIndex = Math.Clamp(value, 0, 3); positions.Clear(); UpdateExtent(); Invalidate(); } }
+    public int SizeIndex { get => sizeIndex; set { CancelDrag(); sizeIndex = Math.Clamp(value, 0, ColumnsWhenMaximized.Length - 1); tileWidth = 0; positions.Clear(); UpdateExtent(); Invalidate(); } }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string? Playing { get => playing; set { if (playing != value) { playing = value; Invalidate(); } } }
     public ThumbnailGrid()
@@ -46,10 +50,29 @@ internal sealed class ThumbnailGrid : ScrollableControl
         animation.Tick += (_, _) => Animate();
         AccessibleName = "Обои: слева направо, сверху вниз";
     }
+    public static int TileWidthFor(int maximizedWidth, int columns, int gap, int minimum) => Math.Max(minimum, (maximizedWidth - gap) / columns - gap);
+    int MeasureTileWidth()
+    {
+        // Tiles are sized from the width the grid gets in a maximized window, so every size keeps
+        // its column count there on any screen resolution and scaling.
+        int width = ClientSize.Width;
+        if (FindForm() is { WindowState: not FormWindowState.Minimized } form && form.ClientSize.Width > 0)
+            width = Screen.FromRectangle(form.Bounds).WorkingArea.Width - (form.ClientSize.Width - Width) - SystemInformation.VerticalScrollBarWidth;
+        return TileWidthFor(width, ColumnsWhenMaximized[sizeIndex], Gap, (int)(72 * ScaleFactor));
+    }
+    public void UpdateMetrics()
+    {
+        int width = MeasureTileWidth();
+        if (width == tileWidth) return;
+        CancelDrag(); tileWidth = width; positions.Clear(); UpdateExtent(); Invalidate();
+    }
     public void SetItems(IEnumerable<ThumbnailItem> value)
     {
+        var list = value.ToList();
+        // The same order coming back after a drop keeps the landing animation running.
+        if (list.SequenceEqual(items)) { Invalidate(); return; }
         if (dragging) CancelDrag();
-        items = value.ToList();
+        items = list;
         if (!items.Any(i => i.Path == selected)) selected = null;
         var paths = items.Select(i => i.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var path in images.Keys.Where(p => !paths.Contains(p)).ToList()) { images[path]?.Dispose(); images.Remove(path); }
@@ -65,7 +88,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         int index = row * Columns + col;
         return point.X >= Gap && point.Y >= Gap && col < Columns && index < VisualItems.Count && Slot(index).Contains(point) ? index : -1;
     }
-    protected override void OnResize(EventArgs e) { base.OnResize(e); CancelDrag(); positions.Clear(); UpdateExtent(); }
+    protected override void OnResize(EventArgs e) { base.OnResize(e); CancelDrag(); UpdateMetrics(); positions.Clear(); UpdateExtent(); }
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -113,7 +136,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         else
         {
             using var placeholder = new SolidBrush(Color.FromArgb(225, 230, 234)); g.FillRectangle(placeholder, imageRect);
-            using var iconFont = new Font("Segoe Fluent Icons", 22);
+            iconFont ??= new Font(Program.IconFont, 22);
             TextRenderer.DrawText(g, "\uEB9F", iconFont, imageRect, Color.FromArgb(113, 128, 135), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
         var numberRect = new Rectangle(imageRect.X + 4, imageRect.Y + 4, (int)(32 * ScaleFactor), (int)(20 * ScaleFactor));
@@ -122,7 +145,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         var label = new Rectangle(rect.X + 4, imageRect.Bottom + 4, rect.Width - 8, (int)(22 * ScaleFactor));
         TextRenderer.DrawText(g, item.Title, Font, label, ForeColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
         var sub = new Rectangle(label.X, label.Bottom, label.Width, (int)(19 * ScaleFactor));
-        using var subFont = new Font(Font.FontFamily, Math.Max(8, Font.Size - 1));
+        subFont ??= new Font(Font.FontFamily, Math.Max(8, Font.Size - 1));
         TextRenderer.DrawText(g, item.SetName, subFont, sub, Color.DimGray, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
         if (item.Path == selected || item.Path == playing || ghost)
         {
@@ -155,7 +178,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         {
             if (!dragging && Math.Abs(pointer.X - press.X) + Math.Abs(pointer.Y - press.Y) > SystemInformation.DragSize.Width)
             {
-                dragging = true; preview = [..items]; tooltip.Hide(this); Cursor = Cursors.SizeAll;
+                dragging = true; preview = [..items]; tooltip.Hide(this); tooltip.SetToolTip(this, ""); hovered = null; Cursor = Cursors.SizeAll;
                 for (int i = 0; i < items.Count; i++) positions[items[i].Path] = Slot(i).Location;
                 animation.Start();
             }
@@ -198,6 +221,12 @@ internal sealed class ThumbnailGrid : ScrollableControl
     {
         base.OnMouseUp(e); if (e.Button != MouseButtons.Left) return;
         bool changed = dragging && preview != null && !items.SequenceEqual(preview);
+        if (dragging && dragged != null)
+        {
+            // The dropped tile glides from the cursor into its slot.
+            positions[dragged] = new PointF(pointer.X - grab.X - AutoScrollPosition.X, pointer.Y - grab.Y - AutoScrollPosition.Y);
+            animation.Start();
+        }
         if (changed) items = preview!;
         committing = true; preview = null; dragging = false; dragged = null; Capture = false; Cursor = Cursors.Default; committing = false;
         if (changed) OrderChanged?.Invoke(this, EventArgs.Empty);
@@ -205,6 +234,15 @@ internal sealed class ThumbnailGrid : ScrollableControl
     }
     protected override void OnMouseCaptureChanged(EventArgs e) { base.OnMouseCaptureChanged(e); if (!Capture && !committing) CancelDrag(); }
     void CancelDrag() { dragging = false; dragged = null; preview = null; animation.Stop(); positions.Clear(); Cursor = Cursors.Default; Invalidate(); }
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        // Ctrl + wheel changes the thumbnail size, like in Explorer.
+        if ((ModifierKeys & Keys.Control) == 0) { base.OnMouseWheel(e); return; }
+        int value = Math.Clamp(sizeIndex + Math.Sign(e.Delta), 0, ColumnsWhenMaximized.Length - 1);
+        if (value != sizeIndex) { SizeIndex = value; SizeIndexChanged?.Invoke(this, EventArgs.Empty); }
+        if (e is HandledMouseEventArgs handled) handled.Handled = true;
+    }
+    protected override void OnFontChanged(EventArgs e) { subFont?.Dispose(); subFont = null; base.OnFontChanged(e); }
     protected override void OnMouseDoubleClick(MouseEventArgs e) { base.OnMouseDoubleClick(e); if (Hit(e.Location) >= 0) ItemActivated?.Invoke(this, EventArgs.Empty); }
     protected override bool IsInputKey(Keys keyData) => keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down || base.IsInputKey(keyData);
     protected override void OnKeyDown(KeyEventArgs e)
@@ -217,7 +255,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
     }
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { animation.Dispose(); tooltip.Dispose(); thumbnails.Dispose(); foreach (var image in images.Values) image?.Dispose(); images.Clear(); }
+        if (disposing) { animation.Dispose(); tooltip.Dispose(); thumbnails.Dispose(); iconFont?.Dispose(); subFont?.Dispose(); foreach (var image in images.Values) image?.Dispose(); images.Clear(); }
         base.Dispose(disposing);
     }
 }

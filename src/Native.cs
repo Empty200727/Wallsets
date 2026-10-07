@@ -15,6 +15,9 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern IntPtr GetParent(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindow(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] internal static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern uint RegisterWindowMessage(string name);
+    [DllImport("dwmapi.dll")] internal static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
     [DllImport("user32.dll")] internal static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] internal static extern int SetWindowLong(IntPtr hwnd, int index, int value);
     [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
@@ -41,17 +44,35 @@ internal static class Native
 
     internal static bool DesktopCovered()
     {
-        var h = GetForegroundWindow();
-        if (h == IntPtr.Zero) return false;
-        var cls = new StringBuilder(256);
-        GetClassName(h, cls, cls.Capacity);
-        if (cls.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
-        GetWindowThreadProcessId(h, out var pid);
-        if (pid == Environment.ProcessId) return false;
-        if (!GetWindowRect(h, out var r)) return false;
-        var b = Screen.PrimaryScreen!.WorkingArea;
-        return r.Left <= b.Left + 2 && r.Top <= b.Top + 2 && r.Right >= b.Right - 2 && r.Bottom >= b.Bottom - 2;
+        var area = Screen.PrimaryScreen!.WorkingArea;
+        var foreground = GetForegroundWindow();
+        switch (foreground == IntPtr.Zero ? "" : WindowClass(foreground))
+        {
+            case "Progman" or "WorkerW": return false;
+            case "" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd": break;
+            default:
+                if (!IsOwn(foreground) && !IsCloaked(foreground)) return GetWindowRect(foreground, out var r) && Covers(r, area);
+                break;
+        }
+        // The taskbar, this program or nothing is active: the top application window below decides.
+        bool covered = false;
+        EnumWindows((h, _) =>
+        {
+            if (!IsWindowVisible(h)) return true;
+            var cls = WindowClass(h);
+            if (cls is "Progman" or "WorkerW") return false;
+            if (IsIconic(h) || IsOwn(h) || IsCloaked(h) || cls is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd") return true;
+            // Skip always-on-top overlays, tool palettes and click-through windows.
+            if ((GetWindowLong(h, -20) & (0x8 | 0x80 | 0x20)) != 0 || !GetWindowRect(h, out var r) || r.Right <= r.Left || r.Bottom <= r.Top) return true;
+            covered = Covers(r, area);
+            return false;
+        }, IntPtr.Zero);
+        return covered;
     }
+    static bool Covers(RECT r, Rectangle b) => r.Left <= b.Left + 2 && r.Top <= b.Top + 2 && r.Right >= b.Right - 2 && r.Bottom >= b.Bottom - 2;
+    static bool IsOwn(IntPtr hwnd) { GetWindowThreadProcessId(hwnd, out var pid); return pid == Environment.ProcessId; }
+    // Hidden UWP frames and windows on other virtual desktops are "cloaked" but still report as visible.
+    static bool IsCloaked(IntPtr hwnd) => DwmGetWindowAttribute(hwnd, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0;
 
     internal static string WindowClass(IntPtr handle)
     {

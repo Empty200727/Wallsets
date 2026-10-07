@@ -1,3 +1,4 @@
+using System.Drawing.Text;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
@@ -8,6 +9,14 @@ internal static class Program
 {
     internal static readonly string Root = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     internal static readonly string Pipe = "Wallsets-control-" + Environment.UserName;
+    static string? iconFont;
+    // Windows 11 ships Segoe Fluent Icons; Windows 10 has the same glyph codes in Segoe MDL2 Assets.
+    internal static string IconFont => iconFont ??= HasFont("Segoe Fluent Icons") ? "Segoe Fluent Icons" : "Segoe MDL2 Assets";
+    static bool HasFont(string name)
+    {
+        using var fonts = new InstalledFontCollection();
+        return fonts.Families.Any(f => f.Name == name);
+    }
     [STAThread]
     static void Main(string[] args)
     {

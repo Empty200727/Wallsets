@@ -30,3 +30,21 @@ Losing the renderer now stops playback with a visible error instead of restartin
 PASS Native mpv renderer: visible, direct child of WorkerW, 1920x1200 bounds.
 PASS Next, pause and resume keep the same player PID and start count.
 Desktop stability samples are recorded separately in desktop-stability.json.
+
+Update 2026-10-07: thumbnail queue, set ticks, sound, Windows 10
+Built on Linux with .NET SDK 10.0.401 and -p:EnableWindowsTargeting=true: no warnings.
+The new Wallsets.exe has the same PE layout as the Windows-built one: x64, GUI subsystem, same manifest.
+Checked under Wine 9.0 with the Windows .NET Desktop Runtime 10.0.12 (an emulation, not real Windows):
+PASS Built-in self-tests, including the new ones (the 42-video check needs the real library).
+PASS Main window starts, sets are scanned, --status reports singleSet, music and musicVolume.
+PASS Maximized at 1920x1080: 12/9/6/4 thumbnails per row for small/medium/large/extra large.
+PASS Mouse drag of a thumbnail: the tile follows the cursor, the others shift live, the drop is saved as manual order.
+PASS Combined queue of two sets can be mixed: a file of one set is placed between files of the other.
+PASS "Выбранный набор": only one tick, a new tick replaces the previous one, switching keeps the last ticked set.
+PASS Sound button and volume slider (keyboard) change and save Music and MusicVolume.
+PASS Fallback thumbnails through the bundled mpv.exe for MP4, WebM and PNG with Cyrillic and "&" in names.
+PASS mpv IPC (mpv 0.37 on Linux): aid=auto/no switches the soundtrack of the playing file and later files;
+     volume is mpv's software volume.
+NOT CHECKED, needs real Windows 10/11: desktop layer attach, real audio output, Windows shell thumbnails,
+icon fonts (Segoe Fluent Icons on 11, Segoe MDL2 Assets on 10), Explorer restart recovery,
+covered-desktop detection.

@@ -17,6 +17,9 @@ public sealed class Settings
     public bool PauseOnBattery { get; set; }
     public bool Floating { get; set; }
     public int ThumbnailSize { get; set; } = 1;
+    public bool SingleSet { get; set; }
+    public bool Music { get; set; }
+    public int MusicVolume { get; set; } = 50;
     public Dictionary<string, SetOptions> Combinations { get; set; } = new();
     public Dictionary<string, SetOptions> Sets { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public static Settings Load(string path)
@@ -25,10 +28,12 @@ public sealed class Settings
         {
             var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(path)) ?? new();
             s.IntervalSeconds = Math.Clamp(s.IntervalSeconds, 5, 86400);
-            s.Selected ??= [];
+            s.Selected = (s.Selected ?? []).Distinct().ToList();
+            if (s.SingleSet && s.Selected.Count > 1) s.Selected = [s.Selected[^1]];
             s.Sets ??= new(StringComparer.OrdinalIgnoreCase);
             s.Combinations ??= new();
             s.ThumbnailSize = Math.Clamp(s.ThumbnailSize, 0, 3);
+            s.MusicVolume = Math.Clamp(s.MusicVolume, 0, 100);
             return s;
         }
         catch { return new(); }

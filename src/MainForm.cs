@@ -10,7 +10,7 @@ namespace Wallsets;
 internal sealed class MainForm : Form
 {
     readonly string setsRoot = Path.Combine(Program.Root, "Наборы");
-    readonly string settingsPath = Path.Combine(Program.Root, "settings.json");
+    readonly string settingsPath = Program.SettingsPath;
     readonly Settings settings;
     readonly Player player = new(Program.Root);
     // Plain check boxes: a set is chosen only by its tick, there is no separate highlighted row.
@@ -21,8 +21,10 @@ internal sealed class MainForm : Form
     readonly ComboBox sorting = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.S(150) };
     readonly NumericUpDown interval = new() { Minimum = 5, Maximum = 86400, Increment = 5, Width = Ui.S(82), ThousandsSeparator = true, TextAlign = HorizontalAlignment.Right };
     readonly Label count = Ui.Caption("", Ui.Body, Ui.Muted);
-    readonly Label current = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.BottomLeft, Font = Ui.Strong, ForeColor = Ui.Text, BackColor = Ui.Surface, UseMnemonic = false };
-    readonly Label status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.TopLeft, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, UseMnemonic = false };
+    // Next to the playback buttons only the countdown is shown (or a problem, in red); the current
+    // wallpaper's name is in its tooltip and in the tray icon's tooltip.
+    readonly Label status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Font = Ui.Strong, ForeColor = Ui.Text, BackColor = Ui.Surface, UseMnemonic = false, Margin = Ui.P(10, 0, 10, 0) };
+    string? statusTip;
     readonly CheckBox sound = Ui.ToggleButton("", "Проигрывать с музыкой");
     readonly TrackBar volume = new() { Minimum = 0, Maximum = 100, SmallChange = 5, LargeChange = 10, TickStyle = TickStyle.None, AutoSize = false, Height = Ui.S(30), Anchor = AnchorStyles.Left | AnchorStyles.Right, BackColor = Ui.Surface, AccessibleName = "Громкость музыки" };
     readonly Label volumeText = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, BackColor = Ui.Surface, ForeColor = Ui.Muted };
@@ -102,6 +104,8 @@ internal sealed class MainForm : Form
         windowHook = Native.SetWinEventHook(0x0003, 0x0017, IntPtr.Zero, windowEvents, 0, 0, 0x0002);
         _ = Handle;
         RegisterHotkeys();
+        // Combinations taken by another program are reported once, near the clock; the settings show the details.
+        if (hotkeyProblem != null) tray.ShowBalloonTip(8000, "Wallsets: горячие клавиши", hotkeyProblem, ToolTipIcon.Info);
         var displayGuid = new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
         powerNotification = Native.RegisterPowerSettingNotification(Handle, ref displayGuid, 0);
         _ = Task.Run(Server);
@@ -205,10 +209,7 @@ internal sealed class MainForm : Form
         pause.BackColor = Ui.Accent; pause.ForeColor = Color.White; pause.FlatAppearance.MouseOverBackColor = Ui.AccentDark; pause.FlatAppearance.MouseDownBackColor = Ui.AccentDark;
         foreach (var b in new[] { previous, pause, next }) { b.Anchor = AnchorStyles.Left; b.Margin = Ui.P(0, 0, 6, 0); }
         layout.Controls.Add(previous, 0, 0); layout.Controls.Add(pause, 1, 0); layout.Controls.Add(next, 2, 0);
-        var now = Grid(1, 2, Ui.P(10, 6, 10, 6));
-        now.RowStyles.Add(new(SizeType.Percent, 55)); now.RowStyles.Add(new(SizeType.Percent, 45));
-        now.Controls.Add(current, 0, 0); now.Controls.Add(status, 0, 1);
-        layout.Controls.Add(now, 3, 0);
+        layout.Controls.Add(status, 3, 0);
         var change = Grid(3, 1, Padding.Empty); change.Dock = DockStyle.None; change.AutoSize = true; change.AutoSizeMode = AutoSizeMode.GrowAndShrink;
         for (int i = 0; i < 3; i++) change.ColumnStyles.Add(new(SizeType.AutoSize));
         change.RowStyles.Clear(); change.RowStyles.Add(new(SizeType.AutoSize)); change.Anchor = AnchorStyles.Left; change.Margin = Ui.P(0, 0, 18, 0);
@@ -390,7 +391,9 @@ internal sealed class MainForm : Form
         bool first = library.Count == 0 && !File.Exists(settingsPath);
         library = Library.Scan(setsRoot);
         if (first) settings.Selected = library.Take(2).Select(s => s.Name).ToList();
-        RefreshSets(); await Rebuild(); SetupWatchers(); Save();
+        // Watch the folders and save before starting playback, which may fail (desktop not ready yet).
+        RefreshSets(); SetupWatchers(); Save();
+        await Rebuild();
     }
     void SetupWatchers()
     {
@@ -489,7 +492,8 @@ internal sealed class MainForm : Form
         currentFile = path; ResetDeadline(); problem = null; playbackFault = false;
         nextHealth = Environment.TickCount64 + 5000;
         if (lastFrame == null) nextFrame = Environment.TickCount64 + 10000;
-        current.Text = Path.GetFileNameWithoutExtension(path); tips.SetToolTip(current, path);
+        var title = Path.GetFileNameWithoutExtension(path);
+        tray.Text = ("Wallsets · " + title).Length <= 120 ? "Wallsets · " + title : ("Wallsets · " + title)[..119] + "…";
         files.Playing = path;
     }
     async Task Next()
@@ -621,13 +625,13 @@ internal sealed class MainForm : Form
         pause.AccessibleName = userPaused ? "Продолжить" : "Пауза";
         trayPause.Text = userPaused ? "Продолжить" : "Пауза";
         if (floatingPause != null) floatingPause.Text = pause.Text;
-        current.Text = queue.Count == 0 ? "Набор не выбран или пуст" : currentFile != null ? Path.GetFileNameWithoutExtension(currentFile) : "Обои не запущены";
-        var remaining = Math.Max(0, (int)Math.Ceiling((nextChange - Environment.TickCount64) / 1000d));
-        string mode = userPaused ? "На паузе" : autoPaused ? "Автопауза · экономия энергии" : "Воспроизведение";
-        string music = settings.Music ? $"  ·  с музыкой {settings.MusicVolume}%" : "";
-        status.ForeColor = problem != null || hotkeyProblem != null ? Ui.Danger : Ui.Muted;
-        status.Text = problem ?? hotkeyProblem ?? (queue.Count == 0 ? "Отметьте набор слева" : $"{mode}{music}  ·  смена через {remaining / 60:00}:{remaining % 60:00}");
-        tips.SetToolTip(status, status.Text);
+        var remaining = TimeSpan.FromSeconds(Math.Max(0, (int)Math.Ceiling((nextChange - Environment.TickCount64) / 1000d)));
+        string countdown = remaining.TotalHours >= 1 ? $"{(int)remaining.TotalHours}:{remaining:mm\\:ss}" : $"{remaining:mm\\:ss}";
+        status.ForeColor = problem != null ? Ui.Danger : queue.Count == 0 ? Ui.Muted : Ui.Text;
+        status.Text = problem ?? (queue.Count == 0 ? "Отметьте набор слева" : "Смена через " + countdown);
+        string state = userPaused ? " · на паузе" : autoPaused ? " · автопауза (экономия энергии)" : "";
+        var tip = problem ?? (currentFile == null ? "" : "Сейчас: " + Path.GetFileNameWithoutExtension(currentFile) + state + (settings.Music ? $" · звук {settings.MusicVolume}%" : ""));
+        if (tip != statusTip) { statusTip = tip; tips.SetToolTip(status, tip); }
     }
     void UpdateFloating()
     {

@@ -77,3 +77,21 @@ the root desktop window "#32769" was taken for a covering window.
 NOT CHECKED, needs real Windows 10/11: video on the desktop layer and the real scaling modes on screen,
 real audio, Windows thumbnails, icon fonts, the background frame at a real shutdown and next boot,
 start with Windows at a real sign-in.
+
+Update 2026-10-07 (3): autostart option, help, countdown, package
+Wallsets.exe is now self-contained (.NET 10 inside, compressed single file, no .pdb).
+dist/Wallsets.zip is made by build/make-package.sh: program, engine (mpv.exe, d3dcompiler_43.dll,
+LICENSE.GPL, mpv/fonts.conf), README.txt, THIRD-PARTY.txt and "Наборы/Тестовый набор" with
+"Белый фон.png" and "Чёрный фон.png" (1920x1080). No sets, caches, logs, settings or debug files.
+Checked under Wine 9.0 with the installed .NET runtime folder renamed away:
+PASS The extracted archive starts and all 17 self-tests pass (library check is now generic).
+PASS First start without settings.json: "Тестовый набор" ticked, sound on at 60%, change every 50 s,
+     file and set names hidden, pause behind a maximized window and on battery on; settings saved.
+PASS Autostart option: HKCU Run entry written and removed; Task Manager "disabled" mark shown as
+     disabled and cleared when ticked again; --autostart-on/--autostart-off (the elevated helper)
+     write and remove the all-users entry. The UAC prompt itself needs real Windows.
+PASS "?" in the settings window opens the help.
+NOTE A self-contained single file without compression failed to start under Wine (image mapping
+     alignment); the compressed variant is used, which loads assemblies from memory.
+Found and fixed: when the first playback failed (desktop not ready right after sign-in), the
+folder watchers were not started and settings were not saved.

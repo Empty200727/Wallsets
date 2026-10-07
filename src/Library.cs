@@ -12,16 +12,17 @@ public sealed class SetOptions
 public sealed class Settings
 {
     public List<string> Selected { get; set; } = [];
-    public double IntervalSeconds { get; set; } = 300;
+    // Defaults of a fresh install: change every 50 s, sound on at 60%, captions off, energy saving on.
+    public double IntervalSeconds { get; set; } = 50;
     public bool AutoPause { get; set; } = true;
-    public bool PauseOnBattery { get; set; }
+    public bool PauseOnBattery { get; set; } = true;
     public bool Floating { get; set; }
     public int ThumbnailSize { get; set; } = 1;
     public bool SingleSet { get; set; }
-    public bool Music { get; set; }
-    public int MusicVolume { get; set; } = 50;
-    public bool ShowNames { get; set; } = true;
-    public bool ShowSetNames { get; set; } = true;
+    public bool Music { get; set; } = true;
+    public int MusicVolume { get; set; } = 60;
+    public bool ShowNames { get; set; }
+    public bool ShowSetNames { get; set; }
     // How the wallpaper fits the screen: fit, stretch, fill or tile.
     public string Scaling { get; set; } = "fill";
     // Action -> combination such as "Ctrl+Alt+P"; an empty string switches the hotkey off.

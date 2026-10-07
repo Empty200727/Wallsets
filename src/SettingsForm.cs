@@ -32,13 +32,20 @@ internal sealed class SettingsForm : Form
         var footer = new Panel { Dock = DockStyle.Bottom, Height = Ui.S(60), BackColor = Ui.Window };
         var done = Ui.TextButton("Готово", Close, accent: true);
         done.Anchor = AnchorStyles.Right | AnchorStyles.Top;
-        footer.Controls.Add(done);
-        footer.Layout += (_, _) => done.Location = new Point(footer.ClientSize.Width - done.Width - Ui.S(20), (footer.Height - done.Height) / 2);
+        var help = Ui.TextButton("?", () => { using var window = new HelpForm(Icon); window.ShowDialog(this); });
+        help.AutoSize = false; help.Size = Ui.S(40, 36); help.Font = Ui.Heading; help.Padding = Padding.Empty;
+        help.AccessibleName = "Справка"; tips.SetToolTip(help, "Справка: как пользоваться Wallsets");
+        footer.Controls.AddRange([done, help]);
+        footer.Layout += (_, _) =>
+        {
+            done.Location = new Point(footer.ClientSize.Width - done.Width - Ui.S(20), (footer.Height - done.Height) / 2);
+            help.Location = new Point(Ui.S(20), (footer.Height - help.Height) / 2);
+        };
         Controls.Add(content); Controls.Add(footer);
         AcceptButton = done; CancelButton = done;
 
         y = Ui.S(16);
-        Preview(); Scaling(); Sound(); Energy(); Startup(); Shortcuts(); Hotkeys();
+        Startup(); Preview(); Scaling(); Sound(); Energy(); Shortcuts(); Hotkeys();
         content.Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(1, Ui.S(4)), BackColor = Ui.Window });
 
         main.StateChanged += SyncSound;
@@ -158,23 +165,49 @@ internal sealed class SettingsForm : Form
     }
     void Startup()
     {
-        var s = Begin("Запуск вместе с Windows");
-        var autostart = s.Add(Check("Запускать вместе с Windows"), gap: 4);
-        s.Hint("При входе в Windows Wallsets запускается в трее, без окна, и сразу включает обои.", Indent);
+        var s = Begin("Автозапуск");
+        var autostart = s.Add(Check("Запускать Wallsets вместе с Windows"), gap: 4);
+        string[] texts =
+        [
+            "Включено: при входе в Windows Wallsets запускается в трее, без окна, и сразу включает обои. В диспетчере задач он виден на вкладке «Автозагрузка» под именем Wallsets.",
+            "Выключено. После включения Wallsets появится в диспетчере задач на вкладке «Автозагрузка».",
+            "Отключено в диспетчере задач. Поставьте галочку, чтобы включить снова.",
+        ];
+        var state = s.Hint(texts.MaxBy(t => t.Length)!, Indent, gap: 6);
+        var open = Ui.TextButton("Открыть автозагрузку в диспетчере задач", () =>
+        {
+            try { Desktop.OpenTaskManagerStartup(); } catch (Exception ex) { Program.Log(ex); }
+        });
+        s.Add(open, Indent, gap: 12);
         var frame = s.Add(Check("Сразу показывать обои при включении"), gap: 4);
         s.Hint("При выключении компьютера последний кадр обоев ставится фоном Windows. После включения сразу видна та же картинка вместо фона Windows, а через несколько секунд она оживает. «Отключить и выйти» возвращает ваш прежний фон Windows.", Indent);
-        try { autostart.Checked = Desktop.Autostart; } catch (Exception ex) { Program.Log(ex); }
-        frame.Checked = settings.WindowsFrame;
+        void Show()
+        {
+            var current = Desktop.StartState.Off;
+            try { current = Desktop.Autostart; } catch (Exception ex) { Program.Log(ex); }
+            updating = true; autostart.Checked = current == Desktop.StartState.On; updating = false;
+            state.Text = current switch { Desktop.StartState.On => texts[0], Desktop.StartState.DisabledInTaskManager => texts[2], _ => texts[1] };
+            state.ForeColor = current == Desktop.StartState.DisabledInTaskManager ? Ui.Warning : Ui.Muted;
+        }
+        Show();
+        // Re-read after coming back from Task Manager, where it can be switched too.
+        Activated += (_, _) => Show();
         autostart.CheckedChanged += (_, _) =>
         {
             if (updating) return;
-            try { Desktop.Autostart = autostart.Checked; }
+            try { Desktop.SetAutostart(autostart.Checked); }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+            {
+                MessageBox.Show(this, "Для автозапуска Windows попросила права администратора, но они не были даны. Автозапуск не изменён.", "Wallsets", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
             catch (Exception ex)
             {
-                Program.Log(ex); updating = true; autostart.Checked = !autostart.Checked; updating = false;
+                Program.Log(ex);
                 MessageBox.Show(this, "Не удалось изменить автозапуск: " + ex.Message, "Wallsets", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+            Show();
         };
+        frame.Checked = settings.WindowsFrame;
         frame.CheckedChanged += (_, _) => main.SetWindowsFrame(frame.Checked);
         End(s);
     }

@@ -117,27 +117,61 @@ internal static class Desktop
     const string ApprovedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
     const string RunValue = "Wallsets";
     static string StartCommand => "\"" + Exe + "\" --tray";
-    public static bool Autostart
+    public enum StartState { Off, On, DisabledInTaskManager }
+    // The entry is looked for in the user's startup list and in the all-users list (used when the
+    // user's list could not be written). Task Manager's "Disable" marks the entry in StartupApproved:
+    // an odd first byte means switched off.
+    public static StartState Autostart
     {
         get
         {
-            using var run = Registry.CurrentUser.OpenSubKey(RunKey);
-            if (!string.Equals(run?.GetValue(RunValue) as string, StartCommand, StringComparison.OrdinalIgnoreCase)) return false;
-            // Task Manager's "Disable" marks the entry here; an odd first byte means switched off.
-            using var approved = Registry.CurrentUser.OpenSubKey(ApprovedKey);
-            return approved?.GetValue(RunValue) is not byte[] { Length: > 0 } flags || (flags[0] & 1) == 0;
-        }
-        set
-        {
-            using (var run = Registry.CurrentUser.CreateSubKey(RunKey))
+            foreach (var hive in new[] { Registry.CurrentUser, Registry.LocalMachine })
             {
-                if (value) run.SetValue(RunValue, StartCommand);
-                else run.DeleteValue(RunValue, false);
+                using var run = hive.OpenSubKey(RunKey);
+                if (!string.Equals(run?.GetValue(RunValue) as string, StartCommand, StringComparison.OrdinalIgnoreCase)) continue;
+                using var approved = hive.OpenSubKey(ApprovedKey);
+                return approved?.GetValue(RunValue) is byte[] { Length: > 0 } flags && (flags[0] & 1) == 1 ? StartState.DisabledInTaskManager : StartState.On;
             }
-            using var approved = Registry.CurrentUser.OpenSubKey(ApprovedKey, true);
-            approved?.DeleteValue(RunValue, false);
+            return StartState.Off;
         }
     }
+    // Writes or removes the startup entry; clearing the Task Manager mark makes "on" really on.
+    public static void WriteAutostart(RegistryKey hive, bool on)
+    {
+        using (var run = hive.CreateSubKey(RunKey))
+        {
+            if (on) run.SetValue(RunValue, StartCommand);
+            else run.DeleteValue(RunValue, false);
+        }
+        using var approved = hive.OpenSubKey(ApprovedKey, true);
+        approved?.DeleteValue(RunValue, false);
+    }
+    // Turns start with Windows on or off. Normally no rights are needed (the user's own list);
+    // if that list is locked, Windows asks for administrator rights and the all-users list is used.
+    public static void SetAutostart(bool on)
+    {
+        bool inAllUsers;
+        using (var run = Registry.LocalMachine.OpenSubKey(RunKey)) inAllUsers = run?.GetValue(RunValue) != null;
+        try
+        {
+            WriteAutostart(Registry.CurrentUser, on);
+            // An all-users entry (made earlier with administrator rights) has to go as well.
+            if (!on && inAllUsers) Elevated("--autostart-off");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            Elevated(on ? "--autostart-on" : "--autostart-off");
+        }
+    }
+    static void Elevated(string argument)
+    {
+        // Throws Win32Exception 1223 when the user declines the Windows prompt.
+        using var helper = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Exe, argument) { UseShellExecute = true, Verb = "runas" })
+            ?? throw new InvalidOperationException("Не удалось запустить Wallsets с правами администратора.");
+        if (!helper.WaitForExit(60000) || helper.ExitCode != 0) throw new InvalidOperationException("Не удалось изменить автозапуск даже с правами администратора.");
+    }
+    public static void OpenTaskManagerStartup() =>
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("taskmgr.exe", "/0 /startup") { UseShellExecute = true });
 
     // ---- Windows background picture ----
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool SystemParametersInfo(uint action, uint param, string? value, uint flags);

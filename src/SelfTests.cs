@@ -27,7 +27,7 @@ internal static class SelfTests
             File.WriteAllText(settingsFile, "{\"SingleSet\":true,\"Selected\":[\"one\",\"two\",\"two\"],\"MusicVolume\":250,\"Music\":true,\"Scaling\":\"zoom\",\"Hotkeys\":null}");
             var loaded = Settings.Load(settingsFile); File.Delete(settingsFile);
             Check(loaded.SingleSet && loaded.Selected.SequenceEqual(["two"]) && loaded.Music && loaded.MusicVolume == 100, "Single-set mode keeps one ticked set; music volume is limited to 0-100%");
-            Check(loaded.Scaling == "fill" && loaded.Hotkeys.Count == 0 && loaded.ShowNames && loaded.ShowSetNames, "Unknown scaling falls back to fill; missing hotkeys use defaults; captions shown by default");
+            Check(loaded.Scaling == "fill" && loaded.Hotkeys.Count == 0 && !loaded.ShowNames && !loaded.ShowSetNames, "Unknown scaling falls back to fill; missing hotkeys use defaults; missing caption options stay off");
             var hotkey = Hotkey.Parse("Ctrl+Alt+P");
             Check(hotkey.ToString() == "Ctrl+Alt+P" && hotkey.Modifiers == 3 && hotkey.Code == Keys.P && Hotkey.Parse(hotkey.ToString()) == hotkey
                 && Hotkey.Parse("Ctrl+Shift+F5").IsValid && Hotkey.Parse("F9").IsValid && Hotkey.Parse("P").IsEmpty && Hotkey.Parse("Shift+P").IsEmpty
@@ -37,7 +37,9 @@ internal static class SelfTests
             var graph = tiled[(tiled.IndexOf('%', tiled.IndexOf('%') + 1) + 1)..];
             Check(tiled.StartsWith("lavfi=graph=%" + System.Text.Encoding.UTF8.GetByteCount(graph) + "%") && graph.Contains("hstack=inputs=4") && graph.Contains("vstack=inputs=4") && graph.EndsWith("crop=1920:1080:0:0")
                 && Player.TileFilter(1920, 1080, 1920, 1080) == "lavfi=graph=%18%crop=1920:1080:0:0", "Tile: a small picture is repeated and cut to the screen size");
-            Check(new Settings().MusicVolume == 50 && !new Settings().Music && !new Settings().SingleSet, "Defaults: no sound, 50% volume, several sets allowed");
+            var fresh = new Settings();
+            Check(fresh.Music && fresh.MusicVolume == 60 && fresh.IntervalSeconds == 50 && !fresh.ShowNames && !fresh.ShowSetNames && fresh.AutoPause && fresh.PauseOnBattery && !fresh.SingleSet,
+                "Fresh install: sound on at 60%, change every 50 s, captions off, both energy-saving pauses on");
             bool sizes = true;
             foreach (var width in new[] { 980, 1550, 2200, 3400 })
                 for (int size = 0; size < ThumbnailGrid.ColumnsWhenMaximized.Length; size++)
@@ -47,7 +49,7 @@ internal static class SelfTests
                 }
             Check(sizes && ThumbnailGrid.ColumnsWhenMaximized[1] is >= 8 and <= 10, "Medium thumbnails: 9 per row in a maximized window; every size keeps its column count");
             var scan = Library.Scan(Path.Combine(root, "Наборы"));
-            Check(scan.Count >= 2 && scan.Sum(s => s.Files.Count) >= 42, "Initial library: two sets, 42 videos");
+            Check(scan.Count >= 1 && scan.Sum(s => s.Files.Count) >= 1, $"Library: {scan.Count} sets, {scan.Sum(s => s.Files.Count)} files");
             Check(scan.SelectMany(s => s.Files.Select(f => Path.Combine(s.Directory, f))).All(File.Exists), "Unicode media paths exist");
             File.WriteAllLines(Path.Combine(root, "self-test.txt"), checks);
         }

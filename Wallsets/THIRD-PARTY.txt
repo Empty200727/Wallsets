@@ -8,5 +8,5 @@ mpv is free software; this GPL-enabled build is licensed under GPLv2 or later.
 mpv source: https://github.com/mpv-player/mpv/tree/eb0ee1031
 Build scripts and dependency versions: https://github.com/shinchiro/mpv-winbuild-cmake
 License: https://github.com/mpv-player/mpv/blob/master/LICENSE.GPL
-Included manual: engine/doc/manual.pdf
-The source links identify the upstream projects for this local installation.
+Manual: https://mpv.io/manual/
+The source links identify the upstream projects of the bundled engine.

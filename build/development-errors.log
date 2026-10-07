@@ -1,0 +1,112 @@
+2026-10-07T18:49:26 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:49:31 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:49:36 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:49:41 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:49:46 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:49:51 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:49:56 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:01 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:06 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:11 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:16 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:21 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:27 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:32 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:37 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:42 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:47 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:52 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:50:57 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:02 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:07 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:12 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:17 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:22 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:27 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:32 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:37 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173
+2026-10-07T18:51:42 System.InvalidOperationException: property unavailable
+   at Wallsets.Player.Command(Object[] command) in E:\ВсякоеРазное\Свалка\Обои\src\Player.cs:line 64
+   at Wallsets.MainForm.Tick() in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 298
+   at Wallsets.MainForm.Run(Func`1 action) in E:\ВсякоеРазное\Свалка\Обои\src\MainForm.cs:line 173

@@ -1,0 +1,32 @@
+Wallsets verification, 2026-10-07, Windows 11 build 26300, x64
+
+PASS Release single-file framework-dependent executable builds without warnings.
+PASS All 42 original videos open and expose valid dimensions and durations.
+PASS Unicode paths (Russian, Chinese, Korean, punctuation, emoji).
+PASS First and second folders contain 20 and 22 videos respectively.
+PASS Default ordering, manual ordering, duplicate and missing-file reconciliation.
+PASS Shuffle preserves every item and remains stable on library rescan.
+PASS UI arrow reorder changes saved order; shuffle writes 20 items to settings.
+PASS Added folder containing PNG detected by watcher without restarting.
+PASS PNG selected in UI remains displayed until timer expiry.
+PASS Pause with 5-second interval: current file changes while player stays paused.
+PASS 2.56-second 3840x2160 video loops three times in an 8-second observation.
+PASS mpv loop-file property is inf; active hardware decoder is d3d11va.
+MEASURE Short 4K clip: player CPU ~0.11% of total CPU, ~246 MB working set.
+        This is one clip and one short measurement, not a workload guarantee.
+PASS Normal stop removes both application and its mpv process.
+PASS Settings can be saved and loaded; UI inspected through Windows automation.
+PASS Windows wallpaper registry configuration is never written by the application.
+
+Implementation: player assigned to a kill-on-close Windows Job Object.
+Forced-termination behavior was not dynamically tested.
+Only primary-monitor use was exercised on this laptop.
+
+Correction after user-reported flickering:
+The original custom WinForms desktop layer was not a valid visual verification.
+It has been removed. mpv now uses its native Windows desktop mode (--wid=0).
+The DisplaySettingsChanged handler that restarted playback has been removed.
+Losing the renderer now stops playback with a visible error instead of restarting.
+PASS Native mpv renderer: visible, direct child of WorkerW, 1920x1200 bounds.
+PASS Next, pause and resume keep the same player PID and start count.
+Desktop stability samples are recorded separately in desktop-stability.json.

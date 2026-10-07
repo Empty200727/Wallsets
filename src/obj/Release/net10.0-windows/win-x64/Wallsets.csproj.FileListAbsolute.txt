@@ -1,0 +1,14 @@
+E:\ВсякоеРазное\Свалка\Обои\src\bin\Release\net10.0-windows\win-x64\Wallsets.exe
+E:\ВсякоеРазное\Свалка\Обои\src\bin\Release\net10.0-windows\win-x64\Wallsets.deps.json
+E:\ВсякоеРазное\Свалка\Обои\src\bin\Release\net10.0-windows\win-x64\Wallsets.runtimeconfig.json
+E:\ВсякоеРазное\Свалка\Обои\src\bin\Release\net10.0-windows\win-x64\Wallsets.dll
+E:\ВсякоеРазное\Свалка\Обои\src\bin\Release\net10.0-windows\win-x64\Wallsets.pdb
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\Wallsets.GeneratedMSBuildEditorConfig.editorconfig
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\Wallsets.AssemblyInfoInputs.cache
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\Wallsets.AssemblyInfo.cs
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\Wallsets.csproj.CoreCompileInputs.cache
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\Wallsets.dll
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\refint\Wallsets.dll
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\Wallsets.pdb
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\Wallsets.genruntimeconfig.cache
+E:\ВсякоеРазное\Свалка\Обои\src\obj\Release\net10.0-windows\win-x64\ref\Wallsets.dll

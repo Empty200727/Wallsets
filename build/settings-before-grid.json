@@ -1,0 +1,72 @@
+{
+  "Selected": [
+    "\u041F\u0435\u0440\u0432\u044B\u0439 \u043D\u0430\u0431\u043E\u0440",
+    "\u0412\u0442\u043E\u0440\u043E\u0439 \u043D\u0430\u0431\u043E\u0440"
+  ],
+  "IntervalSeconds": 50,
+  "AutoPause": false,
+  "PauseOnBattery": false,
+  "Floating": false,
+  "Sets": {
+    "\u0412\u0442\u043E\u0440\u043E\u0439 \u043D\u0430\u0431\u043E\u0440": {
+      "Sort": "shuffle",
+      "Order": [
+        "2272398367 \u2014 [Looped] Dark Winter Path.mp4",
+        "894452793 \u2014 Snow Night.mp4",
+        "1659586110 \u2014 WINDMILL.mp4",
+        "house-forest_dce9720c16 \u2014 House Forest.mp4",
+        "3475208945 \u2014 \uD83C\uDF1FMystical Sky\uD83C\uDF1F4K.mp4",
+        "3765081478 \u2014 Misty Sea _ Seyul.mp4",
+        "lotr-rivendell-live-wallpaper_2bd2c50ef0 \u2014 LOTR Rivendell.mp4",
+        "2779378945 \u2014 \uC774\uC138\uACC4\uC544\uC774\uB3CC _ \uC8FC\uB974\uB974 _ Jururu _ \uACA8\uC6B8\uBD04.mp4",
+        "1657190174 \u2014 Night Stars.mp4",
+        "783436035 \u2014 Gandalf Sax Guy.mp4",
+        "3755207948 \u2014 Varado Mirando Las Estrellas.mp4",
+        "3715169108 \u2014 \u5F02\u73AF\u6A31\u82B1\u6811.mp4",
+        "1176090049 \u2014 Winter camp.mp4",
+        "951259031 \u2014 firewatch.mp4",
+        "archangel-michael_134837d2b8 \u2014 Archangel Michael.mp4",
+        "1356373201 \u2014 Dragon and Magic.mp4",
+        "2853957093 \u2014 Ocean Sunset Ambience by Visualdon.mp4",
+        "3371360530 \u2014 foggy clouds with rain and clock.mp4",
+        "2970331102 \u2014 \u96E8 \u6A31\u3010 Rain Sakura \u3011- 4K.mp4",
+        "3263531834 \u2014 \u9F99\u5973.mp4",
+        "3782170906 \u2014 Blue sky.mp4",
+        "3724138840 \u2014 \u590F\u65E5\u897F\u74DC-AlanGaller.mp4"
+      ]
+    },
+    "\u041F\u0435\u0440\u0432\u044B\u0439 \u043D\u0430\u0431\u043E\u0440": {
+      "Sort": "manual",
+      "Order": [
+        "4k-mahiru-shiina_c62e5d87dd \u2014 Mahiru Shiina 4K.mp4",
+        "913630980 \u2014 \u521B\u4E16\u7834\u6653CG.mp4",
+        "2035555250 \u2014 \u5979\u7684\u623F\u95F4.mp4",
+        "2655882090 \u2014 Last Summer Night.mp4",
+        "2801506118 \u2014 Sky Star.mp4",
+        "2842465196 \u2014 Green abyss [2K].mp4",
+        "1709777756 \u2014 \u0027Thinking\u0027 Chill \u0026 Study [1080- UW][W Lofi].mp4",
+        "3274519787 \u2014 Dark goth angel.mp4",
+        "3293156956 \u2014 Moonlight.mp4",
+        "3343460876 \u2014 Dandadan - Momo Bubble.mp4",
+        "3435246505 \u2014 illustration anime city 4.mp4",
+        "3466724409 \u2014 girl ame 13. tgk whileame.mp4",
+        "3535155057 \u2014 Purple eyes in foliage.mp4",
+        "3546488314 \u2014 black rain.mp4",
+        "3547340831 \u2014 \u30104K\u3011\u7075\u7738_LQ.mp4",
+        "3676910198 \u2014 Evelyn #1.mp4",
+        "3693763716 \u2014 Girl from the dream.mp4",
+        "3717830211 \u2014 Girl _ Dark Background _ Dark \u0026 Colored Versions _ 4K.mp4",
+        "3785421288 \u2014 Luv You Girl.mp4",
+        "anime-devushka-posredi-russkogo-goroda_5ecd7320aa \u2014 Russian.mp4"
+      ]
+    },
+    "Test set": {
+      "Sort": "default",
+      "Order": []
+    },
+    "\u0410\u043D\u0438\u043C\u0435 \u0442\u044F\u043D\u043E\u0447\u043A\u0438": {
+      "Sort": "default",
+      "Order": []
+    }
+  }
+}

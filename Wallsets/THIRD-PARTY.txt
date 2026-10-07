@@ -1,0 +1,12 @@
+Playback engine: mpv v0.41.0-1104-geb0ee1031, build 2026-10-07.
+Windows build: https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261007
+Archive: mpv-x86_64-20261007-git-eb0ee10315.7z
+Archive SHA256: 6720298e1c32dc9ee60970db1c94c8170dbf33520e48eb9d3258584835c96f81
+The downloaded archive checksum was verified against the GitHub release digest.
+
+mpv is free software; this GPL-enabled build is licensed under GPLv2 or later.
+mpv source: https://github.com/mpv-player/mpv/tree/eb0ee1031
+Build scripts and dependency versions: https://github.com/shinchiro/mpv-winbuild-cmake
+License: https://github.com/mpv-player/mpv/blob/master/LICENSE.GPL
+Included manual: engine/doc/manual.pdf
+The source links identify the upstream projects for this local installation.

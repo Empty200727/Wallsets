@@ -1,0 +1,10 @@
+PASS Default order
+PASS Manual order preserves new files and removes missing/duplicate files
+PASS Shuffle preserves every item
+PASS Shuffle remains stable across rescans
+PASS Combined order is keyed independently of selection order
+PASS Combined queue interleaves sets and preserves duplicate filenames in different sets
+PASS Combined queue handles additions and removals
+PASS Previous and next wrap correctly including empty/single queues
+PASS Initial library: two sets, 42 videos
+PASS Unicode media paths exist

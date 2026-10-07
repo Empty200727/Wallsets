@@ -48,3 +48,32 @@ PASS mpv IPC (mpv 0.37 on Linux): aid=auto/no switches the soundtrack of the pla
 NOT CHECKED, needs real Windows 10/11: desktop layer attach, real audio output, Windows shell thumbnails,
 icon fonts (Segoe Fluent Icons on 11, Segoe MDL2 Assets on 10), Explorer restart recovery,
 covered-desktop detection.
+
+Update 2026-10-07 (2): settings window, scaling modes, shortcuts, start with Windows, redesign
+Built on Linux (.NET SDK 10.0.401, -p:EnableWindowsTargeting=true): no warnings. The exe now carries
+the Wallsets icon (RT_ICON/RT_GROUP_ICON) besides version and manifest.
+Checked under Wine 9.0 with the Windows .NET Desktop Runtime 10.0.12 (an emulation, not real Windows):
+PASS Built-in self-tests: hotkey parsing/validation, default hotkeys, tile filter, settings defaults
+     (the 42-video check needs the real library).
+PASS Main window and settings window open; layout checked at 100% and 150% Windows scaling.
+PASS Preview options (file names / set names) and scaling mode are applied and saved.
+PASS Hotkey box: free combination assigned; combination held by another process (Ctrl+Alt+Q) reported
+     as taken, also by "Какие сочетания заняты?"; plain letter refused; Backspace clears.
+PASS Desktop shortcut created with Wallsets.exe, --previous and a generated icon file.
+PASS Start with Windows writes and removes HKCU\...\Run "Wallsets" = "<exe>" --tray.
+PASS --tray starts without a window; --show opens it.
+PASS WM_QUERYENDSESSION/WM_ENDSESSION: the app allows the shutdown and exits cleanly.
+PASS Windows background frame: applied with the matching Windows style (tile, fill), the original
+     picture and style remembered once and restored afterwards.
+PASS Covered-desktop check with real windows: none -> no pause; normal window -> no pause;
+     maximized -> pause; small window over a maximized one -> pause; minimized -> no pause.
+PASS mpv (Linux 0.37, IPC): tile filter graph with %length% quoting gives a 1920x1080 tiled frame,
+     also while paused; keepaspect/panscan/video-unscaled/video-align properties accepted;
+     screenshot-to-file "video" saves the tiled frame.
+Found and fixed while testing: a multi-line TextBox crashed inside Wine when its text was set
+(replaced by a label); the settings window was squeezed to zero height by MaximumSize (w, 0);
+a combination owned by another program never reached the hotkey box (now read by a keyboard hook);
+the root desktop window "#32769" was taken for a covering window.
+NOT CHECKED, needs real Windows 10/11: video on the desktop layer and the real scaling modes on screen,
+real audio, Windows thumbnails, icon fonts, the background frame at a real shutdown and next boot,
+start with Windows at a real sign-in.

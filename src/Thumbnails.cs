@@ -20,20 +20,12 @@ internal sealed class Thumbnails : IDisposable
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr handle);
     static readonly HashSet<string> Pictures = new(".gif .jpg .jpeg .png .bmp .webp .tif .tiff .avif .heic".Split(' '), StringComparer.OrdinalIgnoreCase);
     readonly BlockingCollection<(string Path, TaskCompletionSource<byte[]?> Result)> requests = new();
-    readonly string cache = CacheFolder();
+    readonly string cache = Program.DataFolder("thumbnails");
     bool disposed;
     public Thumbnails()
     {
         var thread = new Thread(Work) { IsBackground = true, Name = "Wallpaper thumbnails", Priority = ThreadPriority.BelowNormal };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-    }
-    static string CacheFolder()
-    {
-        // Next to the program by default; a read-only install folder falls back to the user's profile.
-        foreach (var folder in new[] { Path.Combine(Program.Root, ".cache", "thumbnails"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Wallsets", "thumbnails") })
-            try { Directory.CreateDirectory(folder); return folder; }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        return Path.GetTempPath();
     }
     public Task<byte[]?> Get(string path)
     {

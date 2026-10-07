@@ -12,6 +12,21 @@ internal static class Program
     static string? iconFont;
     // Windows 11 ships Segoe Fluent Icons; Windows 10 has the same glyph codes in Segoe MDL2 Assets.
     internal static string IconFont => iconFont ??= HasFont("Segoe Fluent Icons") ? "Segoe Fluent Icons" : "Segoe MDL2 Assets";
+    // Generated files (thumbnails, icons, frames) live next to the program; a read-only
+    // program folder falls back to the user's profile.
+    internal static string DataFolder(string name)
+    {
+        foreach (var folder in new[] { Path.Combine(Root, ".cache", name), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Wallsets", name) })
+            try
+            {
+                Directory.CreateDirectory(folder);
+                var probe = Path.Combine(folder, ".write-test");
+                File.WriteAllText(probe, ""); File.Delete(probe);
+                return folder;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return Path.GetTempPath();
+    }
     static bool HasFont(string name)
     {
         using var fonts = new InstalledFontCollection();

@@ -20,6 +20,19 @@ public sealed class Settings
     public bool SingleSet { get; set; }
     public bool Music { get; set; }
     public int MusicVolume { get; set; } = 50;
+    public bool ShowNames { get; set; } = true;
+    public bool ShowSetNames { get; set; } = true;
+    // How the wallpaper fits the screen: fit, stretch, fill or tile.
+    public string Scaling { get; set; } = "fill";
+    // Action -> combination such as "Ctrl+Alt+P"; an empty string switches the hotkey off.
+    public Dictionary<string, string> Hotkeys { get; set; } = new();
+    // Put the last wallpaper frame as the Windows background when the session ends, so the next boot starts with it.
+    public bool WindowsFrame { get; set; } = true;
+    public bool FrameApplied { get; set; }
+    public string? OriginalWallpaper { get; set; }
+    public string? OriginalWallpaperStyle { get; set; }
+    public string? OriginalTileWallpaper { get; set; }
+    public static readonly string[] ScalingModes = ["fit", "stretch", "fill", "tile"];
     public Dictionary<string, SetOptions> Combinations { get; set; } = new();
     public Dictionary<string, SetOptions> Sets { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public static Settings Load(string path)
@@ -34,6 +47,8 @@ public sealed class Settings
             s.Combinations ??= new();
             s.ThumbnailSize = Math.Clamp(s.ThumbnailSize, 0, 3);
             s.MusicVolume = Math.Clamp(s.MusicVolume, 0, 100);
+            if (!ScalingModes.Contains(s.Scaling)) s.Scaling = "fill";
+            s.Hotkeys ??= new();
             return s;
         }
         catch { return new(); }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Win32;
@@ -13,134 +14,224 @@ internal sealed class MainForm : Form
     readonly Settings settings;
     readonly Player player = new(Program.Root);
     // Plain check boxes: a set is chosen only by its tick, there is no separate highlighted row.
-    readonly FlowLayoutPanel sets = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Margin = Padding.Empty };
-    readonly ThumbnailGrid files = new() { Dock = DockStyle.Fill };
-    readonly ComboBox queueView = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 205 };
-    readonly ComboBox thumbnailSize = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
-    readonly ComboBox sorting = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
-    readonly NumericUpDown interval = new() { Minimum = 5, Maximum = 86400, Increment = 5, Width = 105, ThousandsSeparator = true };
-    readonly Label current = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
-    readonly Label status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, ForeColor = Color.FromArgb(65, 88, 85) };
-    readonly CheckBox sound = new() { Appearance = Appearance.Button, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleCenter, Size = new Size(36, 42), Margin = new Padding(0, 0, 5, 0), AccessibleName = "Проигрывать с музыкой" };
-    readonly TrackBar volume = new() { Minimum = 0, Maximum = 100, SmallChange = 5, LargeChange = 10, TickFrequency = 10, TickStyle = TickStyle.None, AutoSize = false, Height = 32, Anchor = AnchorStyles.Left | AnchorStyles.Right, AccessibleName = "Громкость музыки" };
-    readonly Label volumeText = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+    readonly FlowLayoutPanel sets = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Margin = Padding.Empty, BackColor = Ui.Surface };
+    readonly ThumbnailGrid files = new() { Dock = DockStyle.Fill, Margin = Padding.Empty };
+    readonly ComboBox queueView = new() { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.System };
+    readonly ComboBox thumbnailSize = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.S(140) };
+    readonly ComboBox sorting = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.S(150) };
+    readonly NumericUpDown interval = new() { Minimum = 5, Maximum = 86400, Increment = 5, Width = Ui.S(82), ThousandsSeparator = true, TextAlign = HorizontalAlignment.Right };
+    readonly Label count = Ui.Caption("", Ui.Body, Ui.Muted);
+    readonly Label current = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.BottomLeft, Font = Ui.Strong, ForeColor = Ui.Text, BackColor = Ui.Surface, UseMnemonic = false };
+    readonly Label status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.TopLeft, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, UseMnemonic = false };
+    readonly CheckBox sound = Ui.ToggleButton("", "Проигрывать с музыкой");
+    readonly TrackBar volume = new() { Minimum = 0, Maximum = 100, SmallChange = 5, LargeChange = 10, TickStyle = TickStyle.None, AutoSize = false, Height = Ui.S(30), Anchor = AnchorStyles.Left | AnchorStyles.Right, BackColor = Ui.Surface, AccessibleName = "Громкость музыки" };
+    readonly Label volumeText = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, BackColor = Ui.Surface, ForeColor = Ui.Muted };
     readonly ToolTip tips = new();
-    readonly NotifyIcon tray = new() { Text = "Wallsets", Icon = SystemIcons.Application, Visible = true };
+    readonly NotifyIcon tray = new() { Text = "Wallsets", Visible = true };
     readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     readonly System.Windows.Forms.Timer scanTimer = new() { Interval = 700 };
     readonly System.Windows.Forms.Timer saveTimer = new() { Interval = 600 };
+    readonly System.Windows.Forms.Timer pauseCheck = new() { Interval = 150 };
     readonly List<FileSystemWatcher> watchers = [];
     readonly CancellationTokenSource cancellation = new();
     readonly SemaphoreSlim actions = new(1);
     readonly bool startInTray;
-    readonly Button pause;
-    readonly Button next;
-    readonly ToolStripMenuItem trayPause = new("Пауза видео");
+    readonly Button pause, next, previous;
+    readonly ToolStripMenuItem trayPause = new("Пауза");
     readonly ToolStripMenuItem traySound = new("Проигрывать с музыкой");
     readonly uint taskbarCreated = Native.RegisterWindowMessage("TaskbarCreated");
+    readonly Dictionary<string, bool> hotkeyState = [];
+    readonly Native.WinEventProc windowEvents;
+    IntPtr windowHook;
     List<MediaSet> library = [];
     List<string> queue = [];
-    string? currentFile;
-    bool updating, busy, exiting, userPaused, autoPaused, locked, displayOff;
-    long nextChange;
+    string? currentFile, lastFrame;
+    bool updating, busy, exiting, cleaned, userPaused, autoPaused, locked, displayOff, allowShow;
+    long nextChange, nextHealth, nextFrame;
+    int attachRetries = 10;
     bool playbackFault, volumeSending, volumePending;
-    string? problem;
+    string? problem, hotkeyProblem;
     Form? floating;
     Button? floatingPause;
     IntPtr powerNotification;
-    long nextHealth;
+    internal Settings Settings => settings;
+    internal event EventHandler? StateChanged;
 
     public MainForm(bool startInTray)
     {
         this.startInTray = startInTray;
         Directory.CreateDirectory(setsRoot);
         settings = Settings.Load(settingsPath);
+        player.Sound = settings.Music; player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling;
         Text = "Wallsets · Живые обои";
-        Font = new Font("Segoe UI", 10);
-        BackColor = Color.FromArgb(245, 247, 247);
-        ForeColor = Color.FromArgb(28, 35, 38);
-        ClientSize = new Size(1280, 820);
-        MinimumSize = new Size(960, 640);
+        AutoScaleMode = AutoScaleMode.None; Font = Ui.Body; BackColor = Ui.Window; ForeColor = Ui.Text;
+        Icon = LoadIcon(0); tray.Icon = LoadIcon(SystemInformation.SmallIconSize.Width);
+        var area = Screen.PrimaryScreen!.WorkingArea;
+        ClientSize = new Size(Math.Min(Ui.S(1240), area.Width - Ui.S(40)), Math.Min(Ui.S(780), area.Height - Ui.S(60)));
+        MinimumSize = new Size(Math.Min(Ui.S(940), area.Width), Math.Min(Ui.S(600), area.Height));
         StartPosition = FormStartPosition.CenterScreen;
-        Icon = SystemIcons.Application;
-        AutoScaleMode = AutoScaleMode.Dpi;
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22), ColumnCount = 1, RowCount = 5 };
-        layout.RowStyles.Add(new(SizeType.Absolute, 50));
-        layout.RowStyles.Add(new(SizeType.Percent, 100));
-        layout.RowStyles.Add(new(SizeType.Absolute, 92));
-        layout.RowStyles.Add(new(SizeType.Absolute, 64));
-        layout.RowStyles.Add(new(SizeType.Absolute, 30));
-        Controls.Add(layout);
-        var heading = new Label { Text = "Живые обои", Font = new Font("Segoe UI Semibold", 20), Dock = DockStyle.Fill };
-        layout.Controls.Add(heading, 0, 0);
+        previous = Ui.IconButton("", "", tips, () => Run(Previous), 13);
+        pause = Ui.IconButton("", "", tips, TogglePause, 14);
+        next = Ui.IconButton("", "", tips, () => Run(Next), 13);
+        BuildLayout();
+        BuildTray();
 
-        var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 8, 0, 12) };
-        body.ColumnStyles.Add(new(SizeType.Absolute, 270)); body.ColumnStyles.Add(new(SizeType.Percent, 100));
-        layout.Controls.Add(body, 0, 1);
-        var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Margin = new Padding(0, 0, 18, 0) };
-        left.RowStyles.Add(new(SizeType.Absolute, 34)); left.RowStyles.Add(new(SizeType.Percent, 100)); left.RowStyles.Add(new(SizeType.Absolute, 44));
-        left.Controls.Add(new Label { Text = "НАБОРЫ", Dock = DockStyle.Fill, ForeColor = Color.DimGray }, 0, 0);
-        sets.BackColor = BackColor; left.Controls.Add(sets, 0, 1);
-        var setTools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        setTools.Controls.Add(IconButton("\uE8B7", "Открыть папку наборов", () => OpenFolder(setsRoot)));
-        setTools.Controls.Add(IconButton("\uE8F4", "Создать набор", CreateSet));
-        setTools.Controls.Add(IconButton("\uE72C", "Обновить наборы", () => Run(Rescan)));
-        left.Controls.Add(setTools, 0, 2); body.Controls.Add(left, 0, 0);
+        sets.Resize += (_, _) => { foreach (Control box in sets.Controls) box.Width = SetWidth; };
+        sorting.SelectedIndexChanged += (_, _) => { if (!updating) ChangeSort(false); };
+        queueView.SelectedIndexChanged += (_, _) => Run(ChangeQueueMode);
+        thumbnailSize.SelectedIndexChanged += (_, _) => { files.SizeIndex = settings.ThumbnailSize = thumbnailSize.SelectedIndex; Save(); };
+        files.SizeIndexChanged += (_, _) => thumbnailSize.SelectedIndex = files.SizeIndex;
+        files.ItemActivated += (_, _) => ShowSelected();
+        files.OrderChanged += (_, _) => StoreViewOrder(files.Items.ToList(), "manual");
+        Move += (_, _) => files.UpdateMetrics();
+        sound.CheckedChanged += (_, _) => SetSound(sound.Checked);
+        volume.ValueChanged += (_, _) => { settings.MusicVolume = player.Volume = volume.Value; UpdateSound(); ApplyVolume(); saveTimer.Stop(); saveTimer.Start(); };
+        interval.ValueChanged += (_, _) => { settings.IntervalSeconds = (double)interval.Value; ResetDeadline(); Save(); };
+        saveTimer.Tick += (_, _) => { saveTimer.Stop(); Save(); };
+        pauseCheck.Tick += (_, _) => { pauseCheck.Stop(); CheckAutoPause(); };
+        timer.Tick += (_, _) => { if (!busy && !exiting) Run(Tick); };
+        scanTimer.Tick += (_, _) => { scanTimer.Stop(); if (busy || files.IsDragging) { scanTimer.Start(); return; } Run(Rescan); };
+        // Hiding to the tray on the close button; real shutdown happens in Exit or when Windows ends the session.
+        FormClosing += (_, e) => { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
+        FormClosed += (_, _) => Cleanup();
+        SystemEvents.SessionSwitch += SessionChanged;
+        SystemEvents.PowerModeChanged += PowerChanged;
+        // Foreground and minimize events re-check the automatic pause at once instead of on the next second.
+        windowEvents = (_, _, _, _, _, _, _) => { pauseCheck.Stop(); pauseCheck.Start(); };
+        windowHook = Native.SetWinEventHook(0x0003, 0x0017, IntPtr.Zero, windowEvents, 0, 0, 0x0002);
+        _ = Handle;
+        RegisterHotkeys();
+        var displayGuid = new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
+        powerNotification = Native.RegisterPowerSettingNotification(Handle, ref displayGuid, 0);
+        _ = Task.Run(Server);
+        UpdateSound(); UpdateStatus();
+        // Start with the keyboard in the wallpaper grid rather than on the first toolbar button.
+        ActiveControl = files;
+        BeginInvoke(() => Run(async () => { await Rescan(); timer.Start(); UpdateFloating(); }));
+    }
 
-        var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Margin = Padding.Empty };
-        right.RowStyles.Add(new(SizeType.Absolute, 76)); right.RowStyles.Add(new(SizeType.Percent, 100)); right.RowStyles.Add(new(SizeType.Absolute, 44));
-        var queueTools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true };
+    static Icon LoadIcon(int size)
+    {
+        using var stream = typeof(MainForm).Assembly.GetManifestResourceStream("Wallsets.app.ico");
+        if (stream == null) return SystemIcons.Application;
+        return size > 0 ? new Icon(stream, size, size) : new Icon(stream);
+    }
+
+    // ---- layout ----
+    void BuildLayout()
+    {
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = Ui.P(14), BackColor = Ui.Window };
+        root.RowStyles.Add(new(SizeType.Percent, 100)); root.RowStyles.Add(new(SizeType.Absolute, Ui.S(78)));
+        Controls.Add(root);
+        var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Ui.P(0, 0, 0, 12), BackColor = Ui.Window };
+        body.ColumnStyles.Add(new(SizeType.Absolute, Ui.S(268))); body.ColumnStyles.Add(new(SizeType.Percent, 100));
+        root.Controls.Add(body, 0, 0);
+        body.Controls.Add(SetsCard(), 0, 0);
+        body.Controls.Add(QueueCard(), 1, 0);
+        root.Controls.Add(PlayerBar(), 0, 1);
+    }
+    static TableLayoutPanel Grid(int columns, int rows, Padding padding)
+    {
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = columns, RowCount = rows, Padding = padding, Margin = Padding.Empty, BackColor = Ui.Surface };
+        // A single row fills the height, so controls anchored only left/right sit in the middle.
+        if (rows == 1) grid.RowStyles.Add(new(SizeType.Percent, 100));
+        return grid;
+    }
+    // Card padding keeps the content inside the rounded corners.
+    static Card CardFor(Control content, Padding margin)
+    {
+        var card = new Card { Dock = DockStyle.Fill, Margin = margin, Padding = Ui.P(5) };
+        card.Controls.Add(content); return card;
+    }
+    Control SetsCard()
+    {
+        var layout = Grid(1, 3, Ui.P(10, 6, 6, 8));
+        layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(44))); layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(42))); layout.RowStyles.Add(new(SizeType.Percent, 100));
+        var header = Grid(2, 1, Padding.Empty);
+        header.ColumnStyles.Add(new(SizeType.Percent, 100)); header.ColumnStyles.Add(new(SizeType.AutoSize));
+        header.Controls.Add(new Label { Text = "Наборы", Font = Ui.Heading, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, BackColor = Ui.Surface }, 0, 0);
+        var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty, BackColor = Ui.Surface, Anchor = AnchorStyles.Right };
+        tools.Controls.Add(Ui.IconButton("", "Создать набор", tips, CreateSet));
+        tools.Controls.Add(Ui.IconButton("", "Открыть папку наборов", tips, () => OpenFolder(setsRoot)));
+        tools.Controls.Add(Ui.IconButton("", "Обновить наборы", tips, () => Run(Rescan)));
+        header.Controls.Add(tools, 1, 0);
+        layout.Controls.Add(header, 0, 0);
         queueView.Items.AddRange(["Общая очередь", "Выбранный набор"]); queueView.SelectedIndex = settings.SingleSet ? 1 : 0;
+        queueView.Anchor = AnchorStyles.Left | AnchorStyles.Right; queueView.Margin = Ui.P(4, 0, 6, 0);
         tips.SetToolTip(queueView, "Общая очередь: можно отметить несколько наборов, их обои идут одной очередью и их можно перемешать между собой.\nВыбранный набор: отмечается только один набор.");
-        queueTools.Controls.Add(queueView);
-        sorting.Items.AddRange(["По умолчанию", "Вручную", "Перемешать"]); queueTools.Controls.Add(sorting);
-        queueTools.Controls.Add(IconButton("\uE8B1", "Перемешать заново", () => ChangeSort(true)));
-        queueTools.Controls.Add(new Label { Text = "Превью", AutoSize = true, Margin = new Padding(10, 7, 4, 0) });
-        thumbnailSize.Items.AddRange(["Мелкие", "Средние", "Крупные", "Очень крупные"]); thumbnailSize.SelectedIndex = settings.ThumbnailSize; files.SizeIndex = settings.ThumbnailSize;
-        queueTools.Controls.Add(thumbnailSize);
-        right.Controls.Add(queueTools, 0, 0);
-        right.Controls.Add(files, 0, 1);
-        var fileTools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 5, 0, 0) };
-        fileTools.Controls.Add(IconButton("\uE72B", "Раньше в очереди", () => MoveSelected(-1)));
-        fileTools.Controls.Add(IconButton("\uE72A", "Позже в очереди", () => MoveSelected(1)));
-        var show = new Button { Text = "Показать выбранные обои", AutoSize = true, Height = 34, FlatStyle = FlatStyle.Flat };
-        show.Click += (_, _) => ShowSelected(); fileTools.Controls.Add(show);
-        fileTools.Controls.Add(IconButton("\uE8B7", "Открыть папку выбранных обоев", () => { if (files.SelectedPath is { } f) OpenFolder(Path.GetDirectoryName(f)!); else OpenFolder(ViewSet?.Directory ?? setsRoot); }));
-        right.Controls.Add(fileTools, 0, 2); body.Controls.Add(right, 1, 0);
-
-        var options = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
-        options.RowStyles.Add(new(SizeType.Percent, 50)); options.RowStyles.Add(new(SizeType.Percent, 50));
-        var timing = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        timing.Controls.Add(new Label { Text = "Менять каждые", AutoSize = true, Margin = new Padding(0, 7, 12, 0) });
-        interval.Value = (decimal)settings.IntervalSeconds; timing.Controls.Add(interval);
-        timing.Controls.Add(new Label { Text = "секунд", AutoSize = true, Margin = new Padding(8, 7, 24, 0) });
-        var floatCheck = new CheckBox { Text = "Мини-пульт", Checked = settings.Floating, AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
-        timing.Controls.Add(floatCheck); options.Controls.Add(timing, 0, 0);
-        var energy = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        var eco = new CheckBox { Text = "Пауза за развёрнутым окном", Checked = settings.AutoPause, AutoSize = true };
-        var battery = new CheckBox { Text = "Пауза от батареи", Checked = settings.PauseOnBattery, AutoSize = true, Margin = new Padding(20, 3, 0, 0) };
-        tips.SetToolTip(eco, "Останавливает видео и музыку, пока развёрнутое или полноэкранное окно закрывает рабочий стол основного монитора. После его сворачивания воспроизведение продолжается. Таймер смены работает.");
-        tips.SetToolTip(battery, "Останавливает видео и музыку при работе от батареи. При подключении зарядки воспроизведение продолжается. Таймер смены работает.");
-        energy.Controls.AddRange([eco, battery]); options.Controls.Add(energy, 0, 1); layout.Controls.Add(options, 0, 2);
-
-        var playback = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 8, RowCount = 1, Padding = new Padding(0, 8, 0, 4) };
-        foreach (var width in new[] { 48, 48, 48, 48, 150, 58 }) playback.ColumnStyles.Add(new(SizeType.Absolute, width));
-        playback.ColumnStyles.Add(new(SizeType.Percent, 100)); playback.ColumnStyles.Add(new(SizeType.Absolute, 232));
-        var previous = IconButton("\uE892", "Предыдущие обои (Ctrl+Alt+B)", () => Run(Previous));
-        pause = IconButton("\uE769", "Пауза видео (Ctrl+Alt+P)", TogglePause);
-        next = IconButton("\uE893", "Следующие обои (Ctrl+Alt+N)", () => Run(Next));
-        previous.Height = pause.Height = next.Height = 42; playback.Controls.Add(previous, 0, 0); playback.Controls.Add(pause, 1, 0); playback.Controls.Add(next, 2, 0);
-        sound.Font = new Font(Program.IconFont, 13); sound.FlatAppearance.BorderSize = 0; sound.FlatAppearance.CheckedBackColor = Color.FromArgb(214, 236, 233);
-        sound.Checked = player.Sound = settings.Music; volume.Value = player.Volume = settings.MusicVolume; volume.BackColor = BackColor;
+        layout.Controls.Add(queueView, 0, 1);
+        sets.Margin = Ui.P(2, 4, 0, 0);
+        layout.Controls.Add(sets, 0, 2);
+        return CardFor(layout, Ui.P(0, 0, 12, 0));
+    }
+    Control QueueCard()
+    {
+        var layout = Grid(1, 3, Ui.P(12, 6, 10, 8));
+        layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(48))); layout.RowStyles.Add(new(SizeType.Percent, 100)); layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(52)));
+        var toolbar = Grid(9, 1, Padding.Empty);
+        toolbar.ColumnStyles.Add(new(SizeType.AutoSize)); toolbar.ColumnStyles.Add(new(SizeType.AutoSize)); toolbar.ColumnStyles.Add(new(SizeType.Percent, 100));
+        for (int i = 0; i < 6; i++) toolbar.ColumnStyles.Add(new(SizeType.AutoSize));
+        Control Middle(Control c, int right = 6) { c.Anchor = AnchorStyles.Left; c.Margin = new Padding(0, 0, Ui.S(right), 0); return c; }
+        toolbar.Controls.Add(Middle(new Label { Text = "Очередь", Font = Ui.Heading, AutoSize = true, BackColor = Ui.Surface }, 10), 0, 0);
+        toolbar.Controls.Add(Middle(count), 1, 0);
+        toolbar.Controls.Add(Middle(Ui.Caption("Порядок", Ui.Body, Ui.Muted)), 3, 0);
+        sorting.Items.AddRange(["По умолчанию", "Вручную", "Перемешать"]);
+        toolbar.Controls.Add(Middle(sorting, 2), 4, 0);
+        toolbar.Controls.Add(Middle(Ui.IconButton("", "Перемешать заново", tips, () => ChangeSort(true)), 14), 5, 0);
+        toolbar.Controls.Add(Middle(Ui.Caption("Превью", Ui.Body, Ui.Muted)), 6, 0);
+        thumbnailSize.Items.AddRange(["Мелкие", "Средние", "Крупные", "Очень крупные"]); thumbnailSize.SelectedIndex = settings.ThumbnailSize;
+        files.SizeIndex = settings.ThumbnailSize; files.ShowNames = settings.ShowNames; files.ShowSetNames = settings.ShowSetNames;
+        tips.SetToolTip(thumbnailSize, "Размер превью; также Ctrl + колесо мыши");
+        toolbar.Controls.Add(Middle(thumbnailSize, 14), 7, 0);
+        toolbar.Controls.Add(Middle(Ui.IconButton("", "Настройки", tips, OpenSettings, 14), 0), 8, 0);
+        layout.Controls.Add(toolbar, 0, 0);
+        layout.Controls.Add(files, 0, 1);
+        var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = Ui.P(0, 10, 0, 0), Margin = Padding.Empty, BackColor = Ui.Surface };
+        var earlier = Ui.TextButton("← Раньше", () => MoveSelected(-1)); tips.SetToolTip(earlier, "Сдвинуть выбранные обои раньше в очереди");
+        var later = Ui.TextButton("Позже →", () => MoveSelected(1)); tips.SetToolTip(later, "Сдвинуть выбранные обои позже в очереди");
+        var show = Ui.TextButton("Показать на рабочем столе", ShowSelected, accent: true); tips.SetToolTip(show, "Поставить выбранные обои сейчас (или двойной щелчок по превью)");
+        footer.Controls.AddRange([earlier, later, show, Ui.IconButton("", "Открыть папку выбранных обоев", tips, () => { if (files.SelectedPath is { } f) OpenFolder(Path.GetDirectoryName(f)!); else OpenFolder(ViewSet?.Directory ?? setsRoot); })]);
+        layout.Controls.Add(footer, 0, 2);
+        return CardFor(layout, Padding.Empty);
+    }
+    Control PlayerBar()
+    {
+        var layout = Grid(9, 1, Ui.P(10, 0, 12, 0));
+        foreach (var style in new[] { SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.Absolute, SizeType.Absolute, SizeType.AutoSize })
+            layout.ColumnStyles.Add(style == SizeType.Percent ? new(SizeType.Percent, 100) : new(style));
+        layout.ColumnStyles[6].Width = Ui.S(120); layout.ColumnStyles[7].Width = Ui.S(48);
+        previous.Size = next.Size = Ui.S(42, 42); pause.Size = Ui.S(50, 42);
+        pause.BackColor = Ui.Accent; pause.ForeColor = Color.White; pause.FlatAppearance.MouseOverBackColor = Ui.AccentDark; pause.FlatAppearance.MouseDownBackColor = Ui.AccentDark;
+        foreach (var b in new[] { previous, pause, next }) { b.Anchor = AnchorStyles.Left; b.Margin = Ui.P(0, 0, 6, 0); }
+        layout.Controls.Add(previous, 0, 0); layout.Controls.Add(pause, 1, 0); layout.Controls.Add(next, 2, 0);
+        var now = Grid(1, 2, Ui.P(10, 6, 10, 6));
+        now.RowStyles.Add(new(SizeType.Percent, 55)); now.RowStyles.Add(new(SizeType.Percent, 45));
+        now.Controls.Add(current, 0, 0); now.Controls.Add(status, 0, 1);
+        layout.Controls.Add(now, 3, 0);
+        var change = Grid(3, 1, Padding.Empty); change.Dock = DockStyle.None; change.AutoSize = true; change.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        for (int i = 0; i < 3; i++) change.ColumnStyles.Add(new(SizeType.AutoSize));
+        change.RowStyles.Clear(); change.RowStyles.Add(new(SizeType.AutoSize)); change.Anchor = AnchorStyles.Left; change.Margin = Ui.P(0, 0, 18, 0);
+        var every = Ui.Caption("Менять каждые", Ui.Body, Ui.Muted); every.Anchor = AnchorStyles.Left;
+        var seconds = Ui.Caption("сек", Ui.Body, Ui.Muted); seconds.Anchor = AnchorStyles.Left;
+        interval.Value = (decimal)settings.IntervalSeconds; interval.Anchor = AnchorStyles.Left; interval.Margin = Ui.P(6, 0, 6, 0);
+        tips.SetToolTip(interval, "Интервал смены обоев: от 5 секунд до 24 часов");
+        change.Controls.Add(every, 0, 0); change.Controls.Add(interval, 1, 0); change.Controls.Add(seconds, 2, 0);
+        layout.Controls.Add(change, 4, 0);
+        sound.Anchor = AnchorStyles.Left; sound.Checked = settings.Music; volume.Value = settings.MusicVolume;
         tips.SetToolTip(volume, "Громкость музыки обоев. Меняет только звук обоев: громкость Windows и других программ не трогает.");
-        playback.Controls.Add(sound, 3, 0); playback.Controls.Add(volume, 4, 0); playback.Controls.Add(volumeText, 5, 0); playback.Controls.Add(current, 6, 0);
-        var stop = new Button { Text = "Отключить и выйти", Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, ForeColor = Color.FromArgb(145, 43, 47), Margin = new Padding(12, 0, 0, 0) };
-        stop.Click += (_, _) => Exit(); playback.Controls.Add(stop, 7, 0); layout.Controls.Add(playback, 0, 3); layout.Controls.Add(status, 0, 4);
-        UpdateSound();
-
-        var menu = new ContextMenuStrip();
+        layout.Controls.Add(sound, 5, 0); layout.Controls.Add(volume, 6, 0); layout.Controls.Add(volumeText, 7, 0);
+        var stop = Ui.TextButton("Отключить и выйти", Exit, danger: true); stop.Anchor = AnchorStyles.Right; stop.Margin = Ui.P(12, 0, 0, 0);
+        tips.SetToolTip(stop, "Остановить обои, закрыть Wallsets и вернуть обычный фон Windows");
+        layout.Controls.Add(stop, 8, 0);
+        return CardFor(layout, Padding.Empty);
+    }
+    void BuildTray()
+    {
+        var menu = new ContextMenuStrip { Font = Ui.Body };
         menu.Items.Add("Открыть Wallsets", null, (_, _) => ShowMain());
+        menu.Items.Add("Настройки", null, (_, _) => { ShowMain(); OpenSettings(); });
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(trayPause); trayPause.Click += (_, _) => TogglePause();
         menu.Items.Add("Предыдущие обои", null, (_, _) => Run(Previous));
         menu.Items.Add("Следующие обои", null, (_, _) => Run(Next));
@@ -148,36 +239,64 @@ internal sealed class MainForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Отключить и вернуть Windows", null, (_, _) => Exit());
         tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => ShowMain();
-
-        sets.Resize += (_, _) => { foreach (Control box in sets.Controls) box.Width = SetWidth; };
-        sorting.SelectedIndexChanged += (_, _) => { if (!updating) ChangeSort(false); };
-        queueView.SelectedIndexChanged += (_, _) => Run(ChangeQueueMode);
-        thumbnailSize.SelectedIndexChanged += (_, _) => { files.SizeIndex = settings.ThumbnailSize = thumbnailSize.SelectedIndex; Save(); };
-        files.SizeIndexChanged += (_, _) => thumbnailSize.SelectedIndex = files.SizeIndex;
-        Move += (_, _) => files.UpdateMetrics();
-        sound.CheckedChanged += (_, _) => SetSound(sound.Checked);
-        volume.ValueChanged += (_, _) => { settings.MusicVolume = player.Volume = volume.Value; UpdateSound(); ApplyVolume(); saveTimer.Stop(); saveTimer.Start(); };
-        saveTimer.Tick += (_, _) => { saveTimer.Stop(); Save(); };
-        interval.ValueChanged += (_, _) => { settings.IntervalSeconds = (double)interval.Value; ResetDeadline(); Save(); };
-        eco.CheckedChanged += (_, _) => { settings.AutoPause = eco.Checked; Save(); };
-        battery.CheckedChanged += (_, _) => { settings.PauseOnBattery = battery.Checked; Save(); };
-        floatCheck.CheckedChanged += (_, _) => { settings.Floating = floatCheck.Checked; UpdateFloating(); Save(); };
-        files.ItemActivated += (_, _) => ShowSelected();
-        files.OrderChanged += (_, _) => StoreViewOrder(files.Items.ToList(), "manual");
-        timer.Tick += (_, _) => { if (!busy && !exiting) Run(Tick); };
-        scanTimer.Tick += (_, _) => { scanTimer.Stop(); if (busy || files.IsDragging) { scanTimer.Start(); return; } Run(Rescan); };
-        Shown += (_, _) => Run(async () => { await Rescan(); timer.Start(); UpdateFloating(); if (startInTray) Hide(); });
-        FormClosing += (_, e) => { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } else Cleanup(); };
-        SystemEvents.SessionSwitch += SessionChanged;
-        _ = Handle;
-        Native.RegisterHotKey(Handle, 1, 0x4003, (uint)Keys.P);
-        Native.RegisterHotKey(Handle, 2, 0x4003, (uint)Keys.N);
-        Native.RegisterHotKey(Handle, 3, 0x4003, (uint)Keys.B);
-        var displayGuid = new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
-        powerNotification = Native.RegisterPowerSettingNotification(Handle, ref displayGuid, 0);
-        _ = Task.Run(Server);
+    }
+    void OpenSettings()
+    {
+        if (OwnedForms.OfType<SettingsForm>().FirstOrDefault() is { } open) { open.Activate(); return; }
+        using var dialog = new SettingsForm(this);
+        dialog.ShowDialog(this);
     }
 
+    // ---- state used by the settings window ----
+    internal void SaveSettings() => Save();
+    internal void SetPreview(bool names, bool setNames) { settings.ShowNames = files.ShowNames = names; settings.ShowSetNames = files.ShowSetNames = setNames; Save(); }
+    internal void SetScaling(string mode)
+    {
+        if (settings.Scaling == mode) return;
+        settings.Scaling = player.Scaling = mode; Save();
+        Run(async () => { if (player.Running) await player.ApplyScaling(currentFile); });
+    }
+    internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
+    internal void SetBatteryPause(bool on) { settings.PauseOnBattery = on; Save(); CheckAutoPause(); }
+    internal void SetFloating(bool on) { settings.Floating = on; UpdateFloating(); Save(); }
+    internal void SetVolume(int value) => volume.Value = Math.Clamp(value, 0, 100);
+    internal void SetWindowsFrame(bool on)
+    {
+        settings.WindowsFrame = on;
+        if (on) nextFrame = Environment.TickCount64 + 5000;
+        else
+        {
+            try { Desktop.RestoreWallpaper(settings); } catch (Exception ex) { Program.Log(ex); }
+            // Changing the Windows background can rebuild the desktop layer: reattach if it did.
+            RecoverDesktop();
+        }
+        Save();
+    }
+    internal bool HotkeyWorks(string id) => hotkeyState.TryGetValue(id, out var ok) && ok;
+    internal void SuspendHotkeys() { for (int i = 1; i <= HotkeyActions.All.Length; i++) Native.UnregisterHotKey(Handle, i); }
+    // Registers the configured combinations; a failure means another program owns that combination.
+    internal void RegisterHotkeys()
+    {
+        SuspendHotkeys(); hotkeyState.Clear();
+        var failed = new List<string>();
+        for (int i = 0; i < HotkeyActions.All.Length; i++)
+        {
+            var key = HotkeyActions.Get(settings, HotkeyActions.All[i].Id);
+            if (key.IsEmpty) continue;
+            bool ok = Native.RegisterHotKey(Handle, i + 1, key.Modifiers | 0x4000, (uint)key.Code);
+            hotkeyState[HotkeyActions.All[i].Id] = ok;
+            if (!ok) failed.Add(key.Display);
+        }
+        hotkeyProblem = failed.Count == 0 ? null : "Заняты другой программой: " + string.Join(", ", failed) + ". Выберите другие клавиши в настройках.";
+        tips.SetToolTip(previous, "Предыдущие обои" + HotkeyHint("previous"));
+        tips.SetToolTip(pause, "Пауза / продолжить" + HotkeyHint("pause"));
+        tips.SetToolTip(next, "Следующие обои" + HotkeyHint("next"));
+        UpdateSound();
+        if (!exiting) UpdateStatus();
+    }
+    string HotkeyHint(string id) { var key = HotkeyActions.Get(settings, id); return HotkeyWorks(id) ? $" ({key.Display})" : ""; }
+
+    // ---- sets and queue ----
     List<MediaSet> ActiveSets => library.Where(s => settings.Selected.Contains(s.Name)).ToList();
     SetOptions CombinedOptions()
     {
@@ -193,11 +312,6 @@ internal sealed class MainForm : Form
         if (!settings.Sets.TryGetValue(set.Name, out var o)) settings.Sets[set.Name] = o = new();
         o.Order ??= [];
         return o;
-    }
-    Button IconButton(string glyph, string tip, Action action)
-    {
-        var b = new Button { Text = glyph, Font = new Font(Program.IconFont, 13), Size = new Size(36, 34), FlatStyle = FlatStyle.Flat, AccessibleName = tip, Margin = new Padding(0, 0, 5, 0) };
-        b.FlatAppearance.BorderSize = 0; tips.SetToolTip(b, tip); b.Click += (_, _) => action(); return b;
     }
     void OpenFolder(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     void Save() { try { settings.Save(settingsPath); } catch (Exception ex) { problem = "Не удалось сохранить настройки: " + ex.Message; Program.Log(ex); } }
@@ -222,7 +336,7 @@ internal sealed class MainForm : Form
             foreach (var old in boxes) { tips.SetToolTip(old, null); old.Dispose(); }
             boxes = library.Select(_ =>
             {
-                var box = new CheckBox { AutoSize = false, AutoEllipsis = true, UseMnemonic = false, Width = SetWidth, Height = 30, Margin = new Padding(0, 0, 0, 2), TextAlign = ContentAlignment.MiddleLeft };
+                var box = new CheckBox { AutoSize = false, AutoEllipsis = true, UseMnemonic = false, Width = SetWidth, Height = Ui.S(32), Margin = Ui.P(0, 0, 0, 2), TextAlign = ContentAlignment.MiddleLeft, BackColor = Ui.Surface, ForeColor = Ui.Text, Cursor = Cursors.Hand };
                 box.CheckedChanged += SetChecked; return box;
             }).ToList();
             sets.Controls.AddRange([.. boxes]); sets.ResumeLayout();
@@ -266,8 +380,11 @@ internal sealed class MainForm : Form
         sorting.SelectedIndex = options.Sort == "manual" ? 1 : options.Sort == "shuffle" ? 2 : 0;
         files.SetItems(queue.Select(p => new ThumbnailItem(p, SetName(p))));
         files.Playing = currentFile;
+        count.Text = queue.Count == 0 ? "" : Plural(queue.Count, "файл", "файла", "файлов") + " · слева направо, сверху вниз";
         updating = false;
     }
+    static string Plural(int n, string one, string few, string many) =>
+        n + " " + (n % 10 == 1 && n % 100 != 11 ? one : n % 10 is >= 2 and <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many);
     async Task Rescan()
     {
         bool first = library.Count == 0 && !File.Exists(settingsPath);
@@ -307,7 +424,7 @@ internal sealed class MainForm : Form
     {
         var order = files.Items.ToList();
         string mode = reshuffle ? "shuffle" : sorting.SelectedIndex == 1 ? "manual" : sorting.SelectedIndex == 2 ? "shuffle" : "default";
-        if (mode == "shuffle") Random.Shared.Shuffle(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(order));
+        if (mode == "shuffle") Random.Shared.Shuffle(CollectionsMarshal.AsSpan(order));
         StoreViewOrder(order, mode);
     }
     void StoreViewOrder(List<ThumbnailItem> order, string mode)
@@ -324,6 +441,7 @@ internal sealed class MainForm : Form
         if (from < 0 || to < 0 || from >= files.Items.Count || to >= files.Items.Count || from == to) return;
         var order = files.Items.ToList(); var item = order[from]; order.RemoveAt(from); order.Insert(to, item);
         StoreViewOrder(order, "manual");
+        files.SelectedIndex = to;
     }
     void ShowSelected()
     {
@@ -338,17 +456,30 @@ internal sealed class MainForm : Form
     }
     void CreateSet()
     {
-        using var dialog = new Form { Text = "Новый набор", Font = Font, ClientSize = new Size(400, 128), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false };
-        var input = new TextBox { Left = 18, Top = 20, Width = 364, PlaceholderText = "Название набора" };
-        var ok = new Button { Text = "Создать", Left = 272, Top = 70, Width = 110, DialogResult = DialogResult.OK };
+        using var dialog = new Form { Text = "Новый набор", Font = Ui.Body, BackColor = Ui.Surface, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(420, 132), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false };
+        var input = new TextBox { Left = Ui.S(20), Top = Ui.S(22), Width = Ui.S(380), PlaceholderText = "Название набора" };
+        var ok = Ui.TextButton("Создать", () => { }, accent: true); ok.DialogResult = DialogResult.OK;
+        ok.AutoSize = false; ok.Bounds = new Rectangle(Ui.S(280), Ui.S(76), Ui.S(120), Ui.S(36));
         dialog.Controls.AddRange([input, ok]); dialog.AcceptButton = ok;
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var name = input.Text.Trim();
         if (name.Length == 0 || name is "." or ".." || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.EndsWith('.')) { MessageBox.Show(this, "Введите допустимое название папки.", "Новый набор"); return; }
         Run(async () => { var path = Path.Combine(setsRoot, name); Directory.CreateDirectory(path); await Rescan(); OpenFolder(path); });
     }
+
+    // ---- playback ----
     void ResetDeadline() => nextChange = Environment.TickCount64 + (long)(settings.IntervalSeconds * 1000);
     bool ShouldAutoPause() => locked || displayOff || settings.AutoPause && Native.DesktopCovered() || settings.PauseOnBattery && SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Offline;
+    // Immediate re-check after window, power or settings changes; the one-second timer is the fallback.
+    void CheckAutoPause()
+    {
+        if (exiting || busy || !player.Running) return;
+        Run(async () =>
+        {
+            bool automatic = ShouldAutoPause();
+            if (automatic != autoPaused && player.Running) { autoPaused = automatic; await player.Pause(userPaused || autoPaused); }
+        });
+    }
     async Task Play(string path)
     {
         if (!File.Exists(path)) { ScheduleScan(); return; }
@@ -357,6 +488,7 @@ internal sealed class MainForm : Form
         catch { playbackFault = true; player.Stop(); throw; }
         currentFile = path; ResetDeadline(); problem = null; playbackFault = false;
         nextHealth = Environment.TickCount64 + 5000;
+        if (lastFrame == null) nextFrame = Environment.TickCount64 + 10000;
         current.Text = Path.GetFileNameWithoutExtension(path); tips.SetToolTip(current, path);
         files.Playing = path;
     }
@@ -372,7 +504,7 @@ internal sealed class MainForm : Form
         await Play(queue[Library.AdjacentIndex(currentFile == null ? -1 : queue.IndexOf(currentFile), queue.Count, -1)]);
     }
     void TogglePause() => Run(async () => { userPaused = !userPaused; if (player.Running) await player.Pause(userPaused || autoPaused); });
-    void SetSound(bool on)
+    internal void SetSound(bool on)
     {
         if (settings.Music == on) return;
         settings.Music = player.Sound = on; UpdateSound(); Save();
@@ -380,11 +512,14 @@ internal sealed class MainForm : Form
     }
     void UpdateSound()
     {
-        sound.Text = settings.Music ? "\uE767" : "\uE74F";
-        tips.SetToolTip(sound, settings.Music ? "Проигрывать с музыкой: включено. Нажмите, чтобы выключить звук" : "Проигрывать с музыкой: выключено. Нажмите, чтобы включить звук");
+        sound.Text = settings.Music ? "" : "";
+        var key = HotkeyActions.Get(settings, "sound");
+        tips.SetToolTip(sound, (settings.Music ? "Проигрывать с музыкой: включено" : "Проигрывать с музыкой: выключено") + (HotkeyWorks("sound") ? $" ({key.Display})" : ""));
         if (sound.Checked != settings.Music) sound.Checked = settings.Music;
+        if (volume.Value != settings.MusicVolume) volume.Value = settings.MusicVolume;
         traySound.Checked = settings.Music;
         volumeText.Text = settings.MusicVolume + "%";
+        StateChanged?.Invoke(this, EventArgs.Empty);
     }
     // The slider sends many values while it is dragged: only the latest one goes to the player.
     async void ApplyVolume()
@@ -404,6 +539,7 @@ internal sealed class MainForm : Form
     {
         await Task.Delay(2000);
         if (exiting || queue.Count == 0 || player.Running && player.Attached) return;
+        attachRetries = Math.Max(attachRetries, 3);
         Run(async () =>
         {
             if (player.Running && player.Attached) return;
@@ -413,7 +549,18 @@ internal sealed class MainForm : Form
     }
     async Task Tick()
     {
-        if (queue.Count == 0 || playbackFault) return;
+        if (queue.Count == 0) return;
+        if (playbackFault)
+        {
+            // Right after Windows starts the desktop may not be ready yet: try again a few times.
+            if (attachRetries > 0 && Environment.TickCount64 >= nextHealth)
+            {
+                attachRetries--; nextHealth = Environment.TickCount64 + 3000;
+                player.Stop(); playbackFault = false;
+                await Play(currentFile != null && queue.Contains(currentFile) ? currentFile : queue[0]);
+            }
+            return;
+        }
         if (!player.Running || !player.Attached)
         {
             playbackFault = true;
@@ -422,10 +569,15 @@ internal sealed class MainForm : Form
             Program.Log(new IOException(problem));
             return;
         }
-        if (!player.Running) return;
         bool automatic = ShouldAutoPause();
         if (automatic != autoPaused) { autoPaused = automatic; await player.Pause(userPaused || autoPaused); }
         if (Environment.TickCount64 >= nextChange) { await Next(); return; }
+        if (settings.WindowsFrame && nextFrame != 0 && Environment.TickCount64 >= nextFrame)
+        {
+            // A spare frame for the Windows background, refreshed now and then; the final one is taken at shutdown.
+            nextFrame = Environment.TickCount64 + 30 * 60 * 1000;
+            await CaptureFrame();
+        }
         if (Environment.TickCount64 >= nextHealth)
         {
             nextHealth = Environment.TickCount64 + 5000;
@@ -439,43 +591,99 @@ internal sealed class MainForm : Form
             }
         }
     }
+    async Task CaptureFrame()
+    {
+        if (!player.Running) return;
+        try
+        {
+            var file = Path.Combine(Desktop.FramesFolder, $"frame-{DateTime.Now:yyyyMMdd-HHmmss}.jpg");
+            await player.SaveFrame(file);
+            if (!File.Exists(file)) return;
+            lastFrame = file;
+            Desktop.CleanFrames(file);
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException or UnauthorizedAccessException) { Program.Log(ex); }
+    }
+    // Windows is ending the session: show the current frame as the Windows background for the next start.
+    void SessionEnding()
+    {
+        if (!settings.WindowsFrame) return;
+        try
+        {
+            if (player.Running && !cleaned) Task.Run(CaptureFrame).Wait(2500);
+            if (lastFrame != null && File.Exists(lastFrame)) { Desktop.ApplyFrame(settings, lastFrame); Save(); }
+        }
+        catch (Exception ex) { Program.Log(ex); }
+    }
     void UpdateStatus()
     {
-        pause.Text = userPaused ? "\uE768" : "\uE769";
-        pause.AccessibleName = userPaused ? "Продолжить видео" : "Пауза видео";
-        trayPause.Text = userPaused ? "Продолжить видео" : "Пауза видео";
+        pause.Text = userPaused ? "" : "";
+        pause.AccessibleName = userPaused ? "Продолжить" : "Пауза";
+        trayPause.Text = userPaused ? "Продолжить" : "Пауза";
         if (floatingPause != null) floatingPause.Text = pause.Text;
-        if (queue.Count == 0) current.Text = "Набор не выбран или пуст";
+        current.Text = queue.Count == 0 ? "Набор не выбран или пуст" : currentFile != null ? Path.GetFileNameWithoutExtension(currentFile) : "Обои не запущены";
         var remaining = Math.Max(0, (int)Math.Ceiling((nextChange - Environment.TickCount64) / 1000d));
-        string mode = userPaused ? "Видео на паузе" : autoPaused ? "Автопауза · экономия энергии" : "Воспроизведение";
-        string music = settings.Music ? $"    ·    С музыкой {settings.MusicVolume}%" : "";
-        status.Text = problem ?? (queue.Count == 0 ? "Выберите набор" : $"{mode}{music}    ·    {queue.Count} обоев    ·    Смена через {remaining / 60:00}:{remaining % 60:00}");
+        string mode = userPaused ? "На паузе" : autoPaused ? "Автопауза · экономия энергии" : "Воспроизведение";
+        string music = settings.Music ? $"  ·  с музыкой {settings.MusicVolume}%" : "";
+        status.ForeColor = problem != null || hotkeyProblem != null ? Ui.Danger : Ui.Muted;
+        status.Text = problem ?? hotkeyProblem ?? (queue.Count == 0 ? "Отметьте набор слева" : $"{mode}{music}  ·  смена через {remaining / 60:00}:{remaining % 60:00}");
+        tips.SetToolTip(status, status.Text);
     }
     void UpdateFloating()
     {
         if (!settings.Floating) { floating?.Close(); floating = null; floatingPause = null; return; }
         if (floating != null) return;
-        floating = new Form { Text = "Пульт Wallsets", FormBorderStyle = FormBorderStyle.FixedToolWindow, ShowInTaskbar = false, TopMost = true, ClientSize = new Size(130, 40), StartPosition = FormStartPosition.Manual, BackColor = BackColor, MaximizeBox = false, MinimizeBox = false };
-        var b = Screen.PrimaryScreen!.WorkingArea; floating.Location = new Point(b.Right - 154, b.Bottom - 105);
-        var p = IconButton("\uE892", "Предыдущие обои", () => Run(Previous)); p.Location = new Point(4, 3);
-        floatingPause = IconButton(pause.Text, "Пауза / продолжить", TogglePause); floatingPause.Location = new Point(46, 3);
-        var n = IconButton("\uE893", "Следующие обои", () => Run(Next)); n.Location = new Point(88, 3);
+        floating = new Form { Text = "Пульт Wallsets", FormBorderStyle = FormBorderStyle.FixedToolWindow, ShowInTaskbar = false, TopMost = true, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(140, 46), StartPosition = FormStartPosition.Manual, BackColor = Ui.Surface, MaximizeBox = false, MinimizeBox = false };
+        var b = Screen.PrimaryScreen!.WorkingArea; floating.Location = new Point(b.Right - floating.Width - Ui.S(16), b.Bottom - floating.Height - Ui.S(16));
+        var p = Ui.IconButton("", "Предыдущие обои", tips, () => Run(Previous)); p.Location = new Point(Ui.S(4), Ui.S(4));
+        floatingPause = Ui.IconButton(pause.Text, "Пауза / продолжить", tips, TogglePause); floatingPause.Location = new Point(Ui.S(51), Ui.S(4));
+        var n = Ui.IconButton("", "Следующие обои", tips, () => Run(Next)); n.Location = new Point(Ui.S(98), Ui.S(4));
         floating.Controls.AddRange([p, floatingPause, n]); floating.FormClosed += (_, _) => { floating = null; floatingPause = null; }; floating.Show();
     }
-    void ShowMain() { Show(); WindowState = FormWindowState.Normal; Activate(); }
+    // Started with --tray (for example by Windows at sign-in): stay hidden until opened from the tray.
+    protected override void SetVisibleCore(bool value)
+    {
+        if (value && startInTray && !allowShow) { value = false; if (!IsHandleCreated) CreateHandle(); }
+        base.SetVisibleCore(value);
+    }
+    void ShowMain() { allowShow = true; Show(); if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); }
     void SessionChanged(object? sender, SessionSwitchEventArgs e)
     {
         if (exiting) return;
-        BeginInvoke(() => { if (e.Reason == SessionSwitchReason.SessionLock) locked = true; if (e.Reason == SessionSwitchReason.SessionUnlock) locked = false; });
+        BeginInvoke(() =>
+        {
+            if (e.Reason == SessionSwitchReason.SessionLock) locked = true;
+            if (e.Reason == SessionSwitchReason.SessionUnlock) locked = false;
+            CheckAutoPause();
+        });
+    }
+    void PowerChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (exiting || e.Mode != PowerModes.StatusChange) return;
+        try { BeginInvoke(CheckAutoPause); } catch (InvalidOperationException) { }
     }
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == 0x312) { if (m.WParam.ToInt32() == 1) TogglePause(); if (m.WParam.ToInt32() == 2) Run(Next); if (m.WParam.ToInt32() == 3) Run(Previous); }
+        if (m.Msg == 0x312)
+        {
+            switch (HotkeyActions.All.ElementAtOrDefault(m.WParam.ToInt32() - 1).Id)
+            {
+                case "pause": TogglePause(); break;
+                case "next": Run(Next); break;
+                case "previous": Run(Previous); break;
+                case "sound": sound.Checked = !sound.Checked; break;
+            }
+        }
         if (taskbarCreated != 0 && m.Msg == (int)taskbarCreated) RecoverDesktop();
-        if (m.Msg == 0x218 && m.WParam.ToInt32() == 0x8013 && m.LParam != IntPtr.Zero) displayOff = System.Runtime.InteropServices.Marshal.ReadInt32(m.LParam, 20) == 0;
+        if (m.Msg == 0x218 && m.WParam.ToInt32() == 0x8013 && m.LParam != IntPtr.Zero)
+        {
+            displayOff = Marshal.ReadInt32(m.LParam, 20) == 0;
+            CheckAutoPause();
+        }
+        if (m.Msg == 0x16 && m.WParam != IntPtr.Zero) SessionEnding();
         base.WndProc(ref m);
     }
-    object Snapshot() => new { running = !exiting, currentFile, count = queue.Count, queue, selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, remainingSeconds = Math.Max(0, (nextChange - Environment.TickCount64) / 1000d), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, problem };
+    object Snapshot() => new { running = !exiting, currentFile, count = queue.Count, queue, selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, remainingSeconds = Math.Max(0, (nextChange - Environment.TickCount64) / 1000d), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, scaling = settings.Scaling, showNames = settings.ShowNames, showSetNames = settings.ShowSetNames, hotkeys = hotkeyState, visible = Visible, problem = problem ?? hotkeyProblem };
     async Task Server()
     {
         while (!cancellation.IsCancellationRequested)
@@ -509,14 +717,22 @@ internal sealed class MainForm : Form
             catch (Exception ex) { if (!exiting) Program.Log(ex); }
         }
     }
-    void Exit() { if (exiting) return; exiting = true; Cleanup(); Close(); }
+    // "Отключить и выйти": stop the player and give Windows its own background back.
+    void Exit()
+    {
+        if (exiting) return;
+        exiting = true; Cleanup();
+        try { Desktop.RestoreWallpaper(settings); Save(); } catch (Exception ex) { Program.Log(ex); }
+        Close();
+    }
     void Cleanup()
     {
-        exiting = true; timer.Stop(); scanTimer.Stop(); saveTimer.Stop(); cancellation.Cancel(); Save();
+        if (cleaned) return;
+        cleaned = exiting = true; timer.Stop(); scanTimer.Stop(); saveTimer.Stop(); pauseCheck.Stop(); cancellation.Cancel(); Save();
         foreach (var w in watchers) w.Dispose(); watchers.Clear();
-        SystemEvents.SessionSwitch -= SessionChanged;
-        Native.UnregisterHotKey(Handle, 1); Native.UnregisterHotKey(Handle, 2);
-        Native.UnregisterHotKey(Handle, 3);
+        SystemEvents.SessionSwitch -= SessionChanged; SystemEvents.PowerModeChanged -= PowerChanged;
+        if (windowHook != IntPtr.Zero) { Native.UnhookWinEvent(windowHook); windowHook = IntPtr.Zero; }
+        if (IsHandleCreated) SuspendHotkeys();
         if (powerNotification != IntPtr.Zero) { Native.UnregisterPowerSettingNotification(powerNotification); powerNotification = IntPtr.Zero; }
         floating?.Close(); player.Dispose(); tray.Visible = false; tray.Dispose();
     }

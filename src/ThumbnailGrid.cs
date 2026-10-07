@@ -24,6 +24,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
     Point press, pointer, grab;
     bool dragging, committing;
     int sizeIndex = 1, tileWidth;
+    bool showNames = true, showSetNames = true;
     Font? iconFont, subFont;
     public event EventHandler? OrderChanged;
     public event EventHandler? SizeIndexChanged;
@@ -36,16 +37,23 @@ internal sealed class ThumbnailGrid : ScrollableControl
     float ScaleFactor => DeviceDpi / 96f;
     int Gap => (int)(10 * ScaleFactor);
     int TileWidth => tileWidth > 0 ? tileWidth : tileWidth = MeasureTileWidth();
-    int TileHeight => (int)(TileWidth * 9f / 16) + (int)(53 * ScaleFactor);
+    int ImageHeight => (int)((TileWidth - 8) * 9f / 16);
+    // Optional caption lines under the picture: file name and set name.
+    int TileHeight => 8 + ImageHeight + (showNames || showSetNames ? (int)(6 * ScaleFactor) : 0) + (showNames ? (int)(22 * ScaleFactor) : 0) + (showSetNames ? (int)(19 * ScaleFactor) : 0);
     public int Columns => Math.Max(1, (ClientSize.Width - Gap) / (TileWidth + Gap));
     List<ThumbnailItem> VisualItems => preview ?? items;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int SizeIndex { get => sizeIndex; set { CancelDrag(); sizeIndex = Math.Clamp(value, 0, ColumnsWhenMaximized.Length - 1); tileWidth = 0; positions.Clear(); UpdateExtent(); Invalidate(); } }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool ShowNames { get => showNames; set { if (showNames != value) { showNames = value; Relayout(); } } }
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool ShowSetNames { get => showSetNames; set { if (showSetNames != value) { showSetNames = value; Relayout(); } } }
+    void Relayout() { CancelDrag(); positions.Clear(); UpdateExtent(); Invalidate(); }
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string? Playing { get => playing; set { if (playing != value) { playing = value; Invalidate(); } } }
     public ThumbnailGrid()
     {
-        AutoScroll = true; TabStop = true; BackColor = Color.White;
+        AutoScroll = true; TabStop = true; BackColor = Ui.Surface; ForeColor = Ui.Text;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.Selectable | ControlStyles.ResizeRedraw, true);
         animation.Tick += (_, _) => Animate();
         AccessibleName = "Обои: слева направо, сверху вниз";
@@ -99,8 +107,13 @@ internal sealed class ThumbnailGrid : ScrollableControl
             var item = list[i]; var slot = Slot(i);
             if (item.Path == dragged && dragging)
             {
-                using var fill = new SolidBrush(Color.FromArgb(227, 240, 238)); e.Graphics.FillRectangle(fill, ScreenRect(slot));
-                using var pen = new Pen(Color.FromArgb(31, 124, 112), 2) { DashStyle = DashStyle.Dash }; var placeholder = ScreenRect(slot); placeholder.Inflate(-2, -2); e.Graphics.DrawRectangle(pen, placeholder);
+                // Where the dragged tile will land.
+                var placeholder = ScreenRect(slot); placeholder.Inflate(-2, -2);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using var path = Ui.RoundedPath(placeholder, (int)(7 * ScaleFactor));
+                using var fill = new SolidBrush(Color.FromArgb(232, 244, 242)); e.Graphics.FillPath(fill, path);
+                using var pen = new Pen(Ui.Accent, 2) { DashStyle = DashStyle.Dash }; e.Graphics.DrawPath(pen, path);
+                e.Graphics.SmoothingMode = SmoothingMode.None;
                 continue;
             }
             var pos = positions.TryGetValue(item.Path, out var animated) ? animated : new PointF(slot.X, slot.Y);
@@ -112,18 +125,24 @@ internal sealed class ThumbnailGrid : ScrollableControl
             var item = list.First(i => i.Path == dragged);
             DrawTile(e.Graphics, item, new Rectangle(pointer.X - grab.X, pointer.Y - grab.Y, TileWidth, TileHeight), list.IndexOf(item), true);
         }
-        if (items.Count == 0) TextRenderer.DrawText(e.Graphics, "Нет обоев", Font, ClientRectangle, Color.Gray, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        if (items.Count == 0) TextRenderer.DrawText(e.Graphics, "Отметьте набор слева — здесь появятся его обои", Font, ClientRectangle, Ui.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
     }
     void DrawTile(Graphics g, ThumbnailItem item, Rectangle rect, int index, bool ghost)
     {
         if (!images.ContainsKey(item.Path)) { images[item.Path] = null; LoadThumbnail(item.Path); }
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        int radius = (int)(7 * ScaleFactor);
         if (ghost)
         {
-            using var shadow = new SolidBrush(Color.FromArgb(65, Color.Black)); var r = rect; r.Offset(5, 7); g.FillRectangle(shadow, r);
+            var shadow = rect; shadow.Offset(4, 6);
+            using var shadowPath = Ui.RoundedPath(shadow, radius); using var shadowBrush = new SolidBrush(Color.FromArgb(55, Color.Black)); g.FillPath(shadowBrush, shadowPath);
         }
-        using var bg = new SolidBrush(item.Path == selected || ghost ? Color.FromArgb(224, 239, 237) : Color.FromArgb(245, 247, 248));
-        g.FillRectangle(bg, rect);
-        var imageRect = new Rectangle(rect.X + 3, rect.Y + 3, rect.Width - 6, (int)((rect.Width - 6) * 9f / 16));
+        bool marked = item.Path == selected || ghost;
+        using (var tilePath = Ui.RoundedPath(rect, radius))
+        using (var bg = new SolidBrush(marked ? Ui.AccentLight : Color.FromArgb(244, 246, 248)))
+            g.FillPath(bg, tilePath);
+        g.SmoothingMode = SmoothingMode.None;
+        var imageRect = new Rectangle(rect.X + 4, rect.Y + 4, rect.Width - 8, ImageHeight);
         if (images.TryGetValue(item.Path, out var image) && image != null)
         {
             if (ghost)
@@ -135,22 +154,32 @@ internal sealed class ThumbnailGrid : ScrollableControl
         }
         else
         {
-            using var placeholder = new SolidBrush(Color.FromArgb(225, 230, 234)); g.FillRectangle(placeholder, imageRect);
+            using var placeholder = new SolidBrush(Color.FromArgb(226, 231, 235)); g.FillRectangle(placeholder, imageRect);
             iconFont ??= new Font(Program.IconFont, 22);
             TextRenderer.DrawText(g, "\uEB9F", iconFont, imageRect, Color.FromArgb(113, 128, 135), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
-        var numberRect = new Rectangle(imageRect.X + 4, imageRect.Y + 4, (int)(32 * ScaleFactor), (int)(20 * ScaleFactor));
-        using var badge = new SolidBrush(Color.FromArgb(180, 20, 25, 27)); g.FillRectangle(badge, numberRect);
+        var numberRect = new Rectangle(imageRect.X + 4, imageRect.Y + 4, (int)(30 * ScaleFactor), (int)(20 * ScaleFactor));
+        using (var badge = new SolidBrush(Color.FromArgb(185, 20, 25, 27))) g.FillRectangle(badge, numberRect);
         TextRenderer.DrawText(g, (index + 1).ToString(), Font, numberRect, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        var label = new Rectangle(rect.X + 4, imageRect.Bottom + 4, rect.Width - 8, (int)(22 * ScaleFactor));
-        TextRenderer.DrawText(g, item.Title, Font, label, ForeColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
-        var sub = new Rectangle(label.X, label.Bottom, label.Width, (int)(19 * ScaleFactor));
-        subFont ??= new Font(Font.FontFamily, Math.Max(8, Font.Size - 1));
-        TextRenderer.DrawText(g, item.SetName, subFont, sub, Color.DimGray, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+        int y = imageRect.Bottom + (int)(5 * ScaleFactor);
+        if (showNames)
+        {
+            var label = new Rectangle(rect.X + 6, y, rect.Width - 12, (int)(22 * ScaleFactor));
+            TextRenderer.DrawText(g, item.Title, Font, label, ForeColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+            y = label.Bottom;
+        }
+        if (showSetNames)
+        {
+            var sub = new Rectangle(rect.X + 6, y, rect.Width - 12, (int)(19 * ScaleFactor));
+            subFont ??= new Font(Font.FontFamily, Math.Max(8, Font.Size - 1));
+            TextRenderer.DrawText(g, item.SetName, subFont, sub, Ui.Muted, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+        }
         if (item.Path == selected || item.Path == playing || ghost)
         {
-            using var pen = new Pen(item.Path == playing ? Color.FromArgb(183, 113, 30) : Color.FromArgb(31, 124, 112), ghost ? 3 : 2);
-            rect.Inflate(-1, -1); g.DrawRectangle(pen, rect);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var pen = new Pen(item.Path == playing && !ghost ? Color.FromArgb(206, 128, 32) : Ui.Accent, ghost ? 3 : 2);
+            rect.Inflate(-1, -1); using var border = Ui.RoundedPath(rect, radius); g.DrawPath(pen, border);
+            g.SmoothingMode = SmoothingMode.None;
         }
     }
     async void LoadThumbnail(string path)

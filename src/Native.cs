@@ -15,6 +15,13 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern IntPtr GetParent(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindow(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] internal static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] internal static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint key, out byte alpha, out uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern uint RegisterWindowMessage(string name);
+    internal delegate void WinEventProc(IntPtr hook, uint eventType, IntPtr hwnd, int objectId, int childId, uint thread, uint time);
+    [DllImport("user32.dll")] internal static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr module, WinEventProc callback, uint process, uint thread, uint flags);
+    [DllImport("user32.dll")] internal static extern bool UnhookWinEvent(IntPtr hook);
+    [DllImport("dwmapi.dll")] internal static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
     [DllImport("user32.dll")] internal static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] internal static extern int SetWindowLong(IntPtr hwnd, int index, int value);
     [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
@@ -39,19 +46,38 @@ internal static class Native
     [StructLayout(LayoutKind.Sequential)] internal struct IOCOUNTERS { public ulong A, B, C, D, E, F; }
     [StructLayout(LayoutKind.Sequential)] internal struct JOBINFO { public BASICLIMIT Basic; public IOCOUNTERS Io; public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob; }
 
+    // The desktop of the primary monitor is hidden when the active window covers it (this also catches
+    // always-on-top full-screen games and players) or when any ordinary window below the active one does
+    // (a small window on top of a maximized one, the taskbar or Start menu being active).
     internal static bool DesktopCovered()
     {
-        var h = GetForegroundWindow();
-        if (h == IntPtr.Zero) return false;
-        var cls = new StringBuilder(256);
-        GetClassName(h, cls, cls.Capacity);
-        if (cls.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd") return false;
-        GetWindowThreadProcessId(h, out var pid);
-        if (pid == Environment.ProcessId) return false;
-        if (!GetWindowRect(h, out var r)) return false;
-        var b = Screen.PrimaryScreen!.WorkingArea;
-        return r.Left <= b.Left + 2 && r.Top <= b.Top + 2 && r.Right >= b.Right - 2 && r.Bottom >= b.Bottom - 2;
+        var area = Screen.PrimaryScreen!.WorkingArea;
+        var foreground = GetForegroundWindow();
+        if (foreground != IntPtr.Zero && !IsDesktop(WindowClass(foreground)) && WindowClass(foreground) is not ("Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
+            && IsWindowVisible(foreground) && !IsIconic(foreground) && !IsCloaked(foreground) && GetWindowRect(foreground, out var active) && Covers(active, area))
+            return true;
+        bool covered = false;
+        EnumWindows((h, _) =>
+        {
+            if (!IsWindowVisible(h)) return true;
+            var cls = WindowClass(h);
+            if (IsDesktop(cls)) return false;
+            if (IsIconic(h) || IsCloaked(h) || cls is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd") return true;
+            // Skip always-on-top overlays, tool palettes, click-through and fully transparent windows.
+            int ex = GetWindowLong(h, -20);
+            if ((ex & (0x8 | 0x80 | 0x20)) != 0) return true;
+            if ((ex & 0x80000) != 0 && GetLayeredWindowAttributes(h, out uint colorKey, out var alpha, out var flags) && (flags & 2) != 0 && alpha == 0) return true;
+            if (!GetWindowRect(h, out var r) || !Covers(r, area)) return true;
+            covered = true;
+            return false;
+        }, IntPtr.Zero);
+        return covered;
     }
+    // The desktop itself: "#32769" is the root desktop window, active when everything is minimized.
+    static bool IsDesktop(string cls) => cls is "Progman" or "WorkerW" or "#32769";
+    static bool Covers(RECT r, Rectangle b) => r.Left <= b.Left + 2 && r.Top <= b.Top + 2 && r.Right >= b.Right - 2 && r.Bottom >= b.Bottom - 2;
+    // Hidden UWP frames and windows on other virtual desktops are "cloaked" but still report as visible.
+    static bool IsCloaked(IntPtr hwnd) => DwmGetWindowAttribute(hwnd, 14, out var cloaked, sizeof(int)) == 0 && cloaked != 0;
 
     internal static string WindowClass(IntPtr handle)
     {

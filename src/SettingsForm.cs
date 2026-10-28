@@ -18,6 +18,8 @@ internal sealed class SettingsForm : Form
     int y;
     bool updating;
     static int CardWidth => Ui.S(600);
+    // "Отключить и выйти" was pressed: the main window exits once this window is closed.
+    public bool ExitRequested { get; private set; }
 
     public SettingsForm(MainForm main)
     {
@@ -45,7 +47,7 @@ internal sealed class SettingsForm : Form
         AcceptButton = done; CancelButton = done;
 
         y = Ui.S(16);
-        Startup(); Preview(); Scaling(); Sound(); Energy(); Shortcuts(); Hotkeys();
+        Startup(); Preview(); Scaling(); Sound(); Energy(); Shortcuts(); Hotkeys(); Quit();
         content.Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(1, Ui.S(4)), BackColor = Ui.Window });
 
         main.StateChanged += SyncSound;
@@ -155,12 +157,9 @@ internal sealed class SettingsForm : Form
         var s = Begin("Экономия энергии");
         var covered = s.Add(Check("Пауза за развёрнутым окном"), gap: 4);
         s.Hint("Видео и музыка останавливаются, пока развёрнутое или полноэкранное окно закрывает рабочий стол основного монитора — даже если поверх него открыто маленькое окно или активна панель задач.", Indent);
-        var battery = s.Add(Check("Пауза от батареи"), gap: 4);
-        s.Hint("Пауза, пока ноутбук работает без зарядки; с зарядкой воспроизведение продолжается.", Indent);
         s.Hint("На паузе декодирование и отрисовка останавливаются: нагрузка на процессор и видеокарту падает почти до нуля. При блокировке компьютера и выключенном экране пауза включается всегда. Таймер смены обоев продолжает идти.");
-        covered.Checked = settings.AutoPause; battery.Checked = settings.PauseOnBattery;
+        covered.Checked = settings.AutoPause;
         covered.CheckedChanged += (_, _) => main.SetAutoPause(covered.Checked);
-        battery.CheckedChanged += (_, _) => main.SetBatteryPause(battery.Checked);
         End(s);
     }
     void Startup()
@@ -264,6 +263,15 @@ internal sealed class SettingsForm : Form
         s.Hint("Маленькое окно с кнопками «предыдущие», «пауза» и «следующие», которое всегда видно.", Indent);
         floating.Checked = settings.Floating;
         floating.CheckedChanged += (_, _) => main.SetFloating(floating.Checked);
+        End(s);
+    }
+
+    void Quit()
+    {
+        var s = Begin("Отключить Wallsets");
+        var exit = Ui.TextButton("Отключить и выйти", () => { ExitRequested = true; Close(); }, danger: true);
+        s.Add(exit, gap: 8);
+        s.Hint("Останавливает обои, закрывает Wallsets (и значок в трее) и возвращает обычный фон Windows. Крестик главного окна только прячет его — обои продолжают работать.");
         End(s);
     }
 

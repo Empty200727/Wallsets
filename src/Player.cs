@@ -20,10 +20,12 @@ internal sealed class Player : IDisposable
     public int Starts { get; private set; }
     public object WindowInfo => Native.DescribeWindow(renderer);
     // Applied when the player starts; while it runs they are changed through SetSound and SetVolume.
-    public bool Sound { get; set; }
+    public bool Sound { get; private set; }
     public int Volume { get; set; } = 50;
     // fit, stretch, fill or tile; applied to every loaded file by ApplyScaling.
     public string Scaling { get; set; } = "fill";
+    // Repeat the file endlessly; off when wallpapers change at the end of each video.
+    public bool Loop { get; set; } = true;
     // Last values sent to mpv, so unchanged options are not sent (and the video is not refiltered) again.
     readonly Dictionary<string, string> applied = [];
     public Player(string root) { this.root = root; }
@@ -37,10 +39,11 @@ internal sealed class Player : IDisposable
         if (job == IntPtr.Zero || !Native.SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf<Native.JOBINFO>()))
             throw new InvalidOperationException("Не удалось создать группу процессов обоев.");
         var start = new ProcessStartInfo(Path.Combine(root, "engine", "mpv.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root };
-        string[] args = ["--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--loop-file=inf", "--aid=" + (Sound ? "auto" : "no"), "--volume=" + Volume, "--volume-max=100", "--audio-client-name=Wallsets", "--hwdec=auto", "--vo=gpu", "--gpu-api=d3d11", "--gpu-context=d3d11", "--profile=fast", "--interpolation=no", "--video-sync=audio", "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=no", "--input-cursor=no", "--cursor-autohide=no", "--stop-screensaver=no", "--image-display-duration=inf", "--keepaspect=" + (Scaling == "stretch" ? "no" : "yes"), "--panscan=" + (Scaling == "fill" ? "1" : "0"), "--terminal=no", "--msg-level=all=warn", "--wid=0", "--input-ipc-server=" + PipeName];
+        string[] args = ["--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--loop-file=" + LoopValue, "--aid=" + SoundValue, "--volume=" + Volume, "--volume-max=100", "--audio-client-name=Wallsets", "--hwdec=auto", "--vo=gpu", "--gpu-api=d3d11", "--gpu-context=d3d11", "--profile=fast", "--interpolation=no", "--video-sync=audio", "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=no", "--input-cursor=no", "--cursor-autohide=no", "--stop-screensaver=no", "--image-display-duration=inf", "--keepaspect=" + (Scaling == "stretch" ? "no" : "yes"), "--panscan=" + (Scaling == "fill" ? "1" : "0"), "--terminal=no", "--msg-level=all=warn", "--wid=0", "--input-ipc-server=" + PipeName];
         foreach (var arg in args) start.ArgumentList.Add(arg);
         applied.Clear();
         applied["keepaspect"] = Scaling == "stretch" ? "no" : "yes"; applied["panscan"] = Scaling == "fill" ? "1" : "0";
+        applied["aid"] = SoundValue; applied["loop-file"] = LoopValue;
         applied["video-unscaled"] = "no"; applied["video-align-x"] = applied["video-align-y"] = "0"; applied["vf"] = "";
         process = Process.Start(start) ?? throw new InvalidOperationException("Не удалось запустить проигрыватель.");
         Starts++;
@@ -88,10 +91,15 @@ internal sealed class Player : IDisposable
         finally { gate.Release(); }
     }
 
-    public async Task Load(string path, bool paused)
+    string SoundValue => Sound ? "auto" : "no";
+    string LoopValue => Loop ? "inf" : "no";
+    public async Task Load(string path, bool paused, bool sound)
     {
+        Sound = sound;
         await Start();
         await Command("set_property", "pause", paused);
+        await Set("aid", SoundValue);
+        await Set("loop-file", LoopValue);
         await Command("loadfile", path, "replace");
         await ApplyScaling(path);
     }
@@ -162,7 +170,8 @@ internal sealed class Player : IDisposable
     public Task SaveFrame(string file) => Command("screenshot-to-file", file, "video");
     public Task Pause(bool paused) => Command("set_property", "pause", paused);
     // "auto" picks the file's soundtrack again, also for the files loaded later; "no" closes the audio output.
-    public Task SetSound(bool on) => Command("set_property", "aid", on ? "auto" : "no");
+    public async Task SetSound(bool on) { Sound = on; if (Running) await Set("aid", SoundValue); }
+    public async Task SetLoop(bool on) { Loop = on; if (Running) await Set("loop-file", LoopValue); }
     // mpv's own software volume: it does not change the Windows volume or other programs.
     public Task SetVolume(int value) => Command("set_property", "volume", value);
     public async Task<JsonElement> OptionalProperty(string name)

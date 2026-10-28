@@ -20,7 +20,7 @@ internal sealed class MainForm : Form
     readonly ComboBox thumbnailSize = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.S(140) };
     readonly ComboBox sorting = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.S(150) };
     readonly NumericUpDown interval = new() { Minimum = 5, Maximum = 86400, Increment = 5, Width = Ui.S(82), ThousandsSeparator = true, TextAlign = HorizontalAlignment.Right };
-    readonly Label count = Ui.Caption("", Ui.Body, Ui.Muted);
+    readonly CheckBox byLength = new() { Text = "по длине видео", AutoSize = true, BackColor = Ui.Surface, ForeColor = Ui.Text, Font = Ui.Body, UseMnemonic = false, Cursor = Cursors.Hand };
     // Next to the playback buttons only the countdown is shown (or a problem, in red); the current
     // wallpaper's name is in its tooltip and in the tray icon's tooltip.
     readonly Label status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Font = Ui.Strong, ForeColor = Ui.Text, BackColor = Ui.Surface, UseMnemonic = false, Margin = Ui.P(10, 0, 10, 0) };
@@ -38,7 +38,7 @@ internal sealed class MainForm : Form
     readonly CancellationTokenSource cancellation = new();
     readonly SemaphoreSlim actions = new(1);
     readonly bool startInTray;
-    readonly Button pause, next, previous;
+    readonly Button pause, next, previous, deleteQueue;
     readonly ToolStripMenuItem trayPause = new("Пауза");
     readonly ToolStripMenuItem traySound = new("Проигрывать с музыкой");
     readonly uint taskbarCreated = Native.RegisterWindowMessage("TaskbarCreated");
@@ -46,8 +46,13 @@ internal sealed class MainForm : Form
     readonly Native.WinEventProc windowEvents;
     IntPtr windowHook;
     List<MediaSet> library = [];
-    List<string> queue = [];
-    string? currentFile, lastFrame;
+    // A file can be in the queue several times; position is the index of the copy on screen.
+    List<MediaFile> queue = [];
+    MediaFile? current;
+    int position = -1, currentCopy;
+    // Seconds left of the current video when wallpapers change at the end of each video.
+    double? videoLeft;
+    string? lastFrame;
     bool updating, busy, exiting, cleaned, userPaused, autoPaused, locked, displayOff, allowShow;
     long nextChange, nextHealth, nextFrame;
     int attachRetries = 10;
@@ -64,7 +69,7 @@ internal sealed class MainForm : Form
         this.startInTray = startInTray;
         Directory.CreateDirectory(setsRoot);
         settings = Settings.Load(settingsPath);
-        player.Sound = settings.Music; player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling;
+        player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling; player.Loop = !settings.ByVideoLength;
         Text = "Wallsets · Живые обои";
         AutoScaleMode = AutoScaleMode.None; Font = Ui.Body; BackColor = Ui.Window; ForeColor = Ui.Text;
         Icon = LoadIcon(0); tray.Icon = LoadIcon(SystemInformation.SmallIconSize.Width);
@@ -76,6 +81,7 @@ internal sealed class MainForm : Form
         previous = Ui.IconButton("", "", tips, () => Run(Previous), 13);
         pause = Ui.IconButton("", "", tips, TogglePause, 14);
         next = Ui.IconButton("", "", tips, () => Run(Next), 13);
+        deleteQueue = Ui.IconButton("\uE74D", "Удалить сохранённую очередь", tips, DeleteQueue);
         BuildLayout();
         BuildTray();
 
@@ -85,9 +91,11 @@ internal sealed class MainForm : Form
         thumbnailSize.SelectedIndexChanged += (_, _) => { files.SizeIndex = settings.ThumbnailSize = thumbnailSize.SelectedIndex; Save(); };
         files.SizeIndexChanged += (_, _) => thumbnailSize.SelectedIndex = files.SizeIndex;
         files.ItemActivated += (_, _) => ShowSelected();
-        files.OrderChanged += (_, _) => StoreViewOrder(files.Items.ToList(), "manual");
+        files.OrderChanged += (_, _) => StoreViewOrder(KeysOf(files.Items), EditMode);
+        files.ItemMenu += (_, point) => ShowTileMenu(point);
         Move += (_, _) => files.UpdateMetrics();
         sound.CheckedChanged += (_, _) => SetSound(sound.Checked);
+        byLength.CheckedChanged += (_, _) => SetByVideoLength(byLength.Checked);
         volume.ValueChanged += (_, _) => { settings.MusicVolume = player.Volume = volume.Value; UpdateSound(); ApplyVolume(); saveTimer.Stop(); saveTimer.Start(); };
         interval.ValueChanged += (_, _) => { settings.IntervalSeconds = (double)interval.Value; ResetDeadline(); Save(); };
         saveTimer.Tick += (_, _) => { saveTimer.Stop(); Save(); };
@@ -98,7 +106,6 @@ internal sealed class MainForm : Form
         FormClosing += (_, e) => { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
         FormClosed += (_, _) => Cleanup();
         SystemEvents.SessionSwitch += SessionChanged;
-        SystemEvents.PowerModeChanged += PowerChanged;
         // Foreground and minimize events re-check the automatic pause at once instead of on the next second.
         windowEvents = (_, _, _, _, _, _, _) => { pauseCheck.Stop(); pauseCheck.Start(); };
         windowHook = Native.SetWinEventHook(0x0003, 0x0017, IntPtr.Zero, windowEvents, 0, 0, 0x0002);
@@ -173,22 +180,27 @@ internal sealed class MainForm : Form
     {
         var layout = Grid(1, 3, Ui.P(12, 6, 10, 8));
         layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(48))); layout.RowStyles.Add(new(SizeType.Percent, 100)); layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(52)));
-        var toolbar = Grid(9, 1, Padding.Empty);
-        toolbar.ColumnStyles.Add(new(SizeType.AutoSize)); toolbar.ColumnStyles.Add(new(SizeType.AutoSize)); toolbar.ColumnStyles.Add(new(SizeType.Percent, 100));
-        for (int i = 0; i < 6; i++) toolbar.ColumnStyles.Add(new(SizeType.AutoSize));
+        var toolbar = Grid(10, 1, Padding.Empty);
+        toolbar.ColumnStyles.Add(new(SizeType.AutoSize)); toolbar.ColumnStyles.Add(new(SizeType.Percent, 100));
+        for (int i = 0; i < 8; i++) toolbar.ColumnStyles.Add(new(SizeType.AutoSize));
         Control Middle(Control c, int right = 6) { c.Anchor = AnchorStyles.Left; c.Margin = new Padding(0, 0, Ui.S(right), 0); return c; }
         toolbar.Controls.Add(Middle(new Label { Text = "Очередь", Font = Ui.Heading, AutoSize = true, BackColor = Ui.Surface }, 10), 0, 0);
-        toolbar.Controls.Add(Middle(count), 1, 0);
-        toolbar.Controls.Add(Middle(Ui.Caption("Порядок", Ui.Body, Ui.Muted)), 3, 0);
+        toolbar.Controls.Add(Middle(Ui.Caption("Порядок", Ui.Body, Ui.Muted)), 2, 0);
         sorting.Items.AddRange(["По умолчанию", "Вручную", "Перемешать"]);
-        toolbar.Controls.Add(Middle(sorting, 2), 4, 0);
-        toolbar.Controls.Add(Middle(Ui.IconButton("", "Перемешать заново", tips, () => ChangeSort(true)), 14), 5, 0);
-        toolbar.Controls.Add(Middle(Ui.Caption("Превью", Ui.Body, Ui.Muted)), 6, 0);
+        tips.SetToolTip(sorting, "Порядок очереди. Сохранённые очереди показываются здесь, когда отмечены те же наборы, для которых они сохранены.");
+        toolbar.Controls.Add(Middle(sorting, 2), 3, 0);
+        toolbar.Controls.Add(Middle(Ui.IconButton("", "Перемешать заново", tips, () => ChangeSort(true)), 2), 4, 0);
+        deleteQueue.Visible = false;
+        toolbar.Controls.Add(Middle(deleteQueue, 2), 5, 0);
+        var saveQueue = Ui.TextButton("Сохранить очередь", SaveQueue);
+        tips.SetToolTip(saveQueue, "Сохранить текущую очередь под своим названием. Она появится в списке «Порядок», когда отмечены эти же наборы.");
+        toolbar.Controls.Add(Middle(saveQueue, 14), 6, 0);
+        toolbar.Controls.Add(Middle(Ui.Caption("Превью", Ui.Body, Ui.Muted)), 7, 0);
         thumbnailSize.Items.AddRange(["Мелкие", "Средние", "Крупные", "Очень крупные"]); thumbnailSize.SelectedIndex = settings.ThumbnailSize;
         files.SizeIndex = settings.ThumbnailSize; files.ShowNames = settings.ShowNames; files.ShowSetNames = settings.ShowSetNames;
         tips.SetToolTip(thumbnailSize, "Размер превью; также Ctrl + колесо мыши");
-        toolbar.Controls.Add(Middle(thumbnailSize, 14), 7, 0);
-        toolbar.Controls.Add(Middle(Ui.IconButton("", "Настройки", tips, OpenSettings, 14), 0), 8, 0);
+        toolbar.Controls.Add(Middle(thumbnailSize, 14), 8, 0);
+        toolbar.Controls.Add(Middle(Ui.IconButton("", "Настройки", tips, OpenSettings, 14), 0), 9, 0);
         layout.Controls.Add(toolbar, 0, 0);
         layout.Controls.Add(files, 0, 1);
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = Ui.P(0, 10, 0, 0), Margin = Padding.Empty, BackColor = Ui.Surface };
@@ -201,8 +213,8 @@ internal sealed class MainForm : Form
     }
     Control PlayerBar()
     {
-        var layout = Grid(9, 1, Ui.P(10, 0, 12, 0));
-        foreach (var style in new[] { SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.Absolute, SizeType.Absolute, SizeType.AutoSize })
+        var layout = Grid(8, 1, Ui.P(10, 0, 12, 0));
+        foreach (var style in new[] { SizeType.AutoSize, SizeType.AutoSize, SizeType.AutoSize, SizeType.Percent, SizeType.AutoSize, SizeType.AutoSize, SizeType.Absolute, SizeType.Absolute })
             layout.ColumnStyles.Add(style == SizeType.Percent ? new(SizeType.Percent, 100) : new(style));
         layout.ColumnStyles[6].Width = Ui.S(120); layout.ColumnStyles[7].Width = Ui.S(48);
         previous.Size = next.Size = Ui.S(42, 42); pause.Size = Ui.S(50, 42);
@@ -210,21 +222,20 @@ internal sealed class MainForm : Form
         foreach (var b in new[] { previous, pause, next }) { b.Anchor = AnchorStyles.Left; b.Margin = Ui.P(0, 0, 6, 0); }
         layout.Controls.Add(previous, 0, 0); layout.Controls.Add(pause, 1, 0); layout.Controls.Add(next, 2, 0);
         layout.Controls.Add(status, 3, 0);
-        var change = Grid(3, 1, Padding.Empty); change.Dock = DockStyle.None; change.AutoSize = true; change.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        for (int i = 0; i < 3; i++) change.ColumnStyles.Add(new(SizeType.AutoSize));
+        var change = Grid(4, 1, Padding.Empty); change.Dock = DockStyle.None; change.AutoSize = true; change.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        for (int i = 0; i < 4; i++) change.ColumnStyles.Add(new(SizeType.AutoSize));
         change.RowStyles.Clear(); change.RowStyles.Add(new(SizeType.AutoSize)); change.Anchor = AnchorStyles.Left; change.Margin = Ui.P(0, 0, 18, 0);
         var every = Ui.Caption("Менять каждые", Ui.Body, Ui.Muted); every.Anchor = AnchorStyles.Left;
         var seconds = Ui.Caption("сек", Ui.Body, Ui.Muted); seconds.Anchor = AnchorStyles.Left;
         interval.Value = (decimal)settings.IntervalSeconds; interval.Anchor = AnchorStyles.Left; interval.Margin = Ui.P(6, 0, 6, 0);
         tips.SetToolTip(interval, "Интервал смены обоев: от 5 секунд до 24 часов");
-        change.Controls.Add(every, 0, 0); change.Controls.Add(interval, 1, 0); change.Controls.Add(seconds, 2, 0);
+        byLength.Checked = settings.ByVideoLength; byLength.Anchor = AnchorStyles.Left; byLength.Margin = Ui.P(10, 0, 0, 0);
+        tips.SetToolTip(byLength, "Менять видео, когда оно доиграет до конца, а не через заданное время. Картинки меняются через заданный интервал.");
+        change.Controls.Add(every, 0, 0); change.Controls.Add(interval, 1, 0); change.Controls.Add(seconds, 2, 0); change.Controls.Add(byLength, 3, 0);
         layout.Controls.Add(change, 4, 0);
         sound.Anchor = AnchorStyles.Left; sound.Checked = settings.Music; volume.Value = settings.MusicVolume;
         tips.SetToolTip(volume, "Громкость музыки обоев. Меняет только звук обоев: громкость Windows и других программ не трогает.");
         layout.Controls.Add(sound, 5, 0); layout.Controls.Add(volume, 6, 0); layout.Controls.Add(volumeText, 7, 0);
-        var stop = Ui.TextButton("Отключить и выйти", Exit, danger: true); stop.Anchor = AnchorStyles.Right; stop.Margin = Ui.P(12, 0, 0, 0);
-        tips.SetToolTip(stop, "Остановить обои, закрыть Wallsets и вернуть обычный фон Windows");
-        layout.Controls.Add(stop, 8, 0);
         return CardFor(layout, Padding.Empty);
     }
     void BuildTray()
@@ -246,6 +257,8 @@ internal sealed class MainForm : Form
         if (OwnedForms.OfType<SettingsForm>().FirstOrDefault() is { } open) { open.Activate(); return; }
         using var dialog = new SettingsForm(this);
         dialog.ShowDialog(this);
+        // "Отключить и выйти" in the settings: the window is closed first, then Wallsets.
+        if (dialog.ExitRequested) Exit();
     }
 
     // ---- state used by the settings window ----
@@ -255,10 +268,9 @@ internal sealed class MainForm : Form
     {
         if (settings.Scaling == mode) return;
         settings.Scaling = player.Scaling = mode; Save();
-        Run(async () => { if (player.Running) await player.ApplyScaling(currentFile); });
+        Run(async () => { if (player.Running) await player.ApplyScaling(current?.Path); });
     }
     internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
-    internal void SetBatteryPause(bool on) { settings.PauseOnBattery = on; Save(); CheckAutoPause(); }
     internal void SetFloating(bool on) { settings.Floating = on; UpdateFloating(); Save(); }
     internal void SetVolume(int value) => volume.Value = Math.Clamp(value, 0, 100);
     internal void SetWindowsFrame(bool on)
@@ -298,22 +310,31 @@ internal sealed class MainForm : Form
     string HotkeyHint(string id) { var key = HotkeyActions.Get(settings, id); return HotkeyWorks(id) ? $" ({key.Display})" : ""; }
 
     // ---- sets and queue ----
-    List<MediaSet> ActiveSets => library.Where(s => settings.Selected.Contains(s.Name)).ToList();
+    const int MaxCopies = 99;
+    List<MediaSet> ActiveSets => library.Where(s => settings.Selected.Contains(s.Id)).ToList();
+    string ActiveKey => Library.CombinationKey(ActiveSets.Select(s => s.Id));
     SetOptions CombinedOptions()
     {
-        var key = Library.CombinationKey(ActiveSets.Select(s => s.Name));
-        if (!settings.Combinations.TryGetValue(key, out var options)) settings.Combinations[key] = options = new();
+        if (!settings.Combinations.TryGetValue(ActiveKey, out var options)) settings.Combinations[ActiveKey] = options = new();
         return options;
     }
     MediaSet? ViewSet => ActiveSets.Count == 1 ? ActiveSets[0] : null;
-    SetOptions ViewOptions => ViewSet is { } s ? Options(s) : CombinedOptions();
-    string SetName(string path) => Path.GetRelativePath(setsRoot, path).Split(Path.DirectorySeparatorChar)[0];
-    SetOptions Options(MediaSet set)
+    SetOptions ViewOptions => ViewSet is { } s ? Options(s.Id) : CombinedOptions();
+    // Saved queues made for exactly the ticked sets, in the order they were saved.
+    List<SavedQueue> ViewQueues => settings.Queues.Where(q => Library.CombinationKey(q.Sets) == ActiveKey).ToList();
+    SavedQueue? Saved(SetOptions options) => options.Sort.StartsWith("saved:") ? settings.Queues.FirstOrDefault(q => "saved:" + q.Id == options.Sort) : null;
+    // Dragging and moving tiles edit the saved queue that is shown, otherwise the manual order.
+    string EditMode => Saved(ViewOptions) != null ? ViewOptions.Sort : "manual";
+    SetOptions Options(string setId)
     {
-        if (!settings.Sets.TryGetValue(set.Name, out var o)) settings.Sets[set.Name] = o = new();
-        o.Order ??= [];
+        if (!settings.Sets.TryGetValue(setId, out var o)) settings.Sets[setId] = o = new();
+        o.Order ??= []; o.Counts ??= new(); o.Sound ??= [];
         return o;
     }
+    int CountOf(MediaFile file) => Options(file.SetId).Counts.TryGetValue(file.FileId, out var n) ? Math.Clamp(n, 1, MaxCopies) : 1;
+    // The sound switch in the player bar turns sound on for every wallpaper; a single wallpaper can have its own.
+    bool SoundFor(MediaFile? file) => settings.Music || file != null && Options(file.SetId).Sound.Contains(file.FileId);
+    static List<string> KeysOf(IEnumerable<ThumbnailItem> items) => items.Select(i => i.Key).ToList();
     void OpenFolder(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     void Save() { try { settings.Save(settingsPath); } catch (Exception ex) { problem = "Не удалось сохранить настройки: " + ex.Message; Program.Log(ex); } }
     async void Run(Func<Task> action)
@@ -345,14 +366,14 @@ internal sealed class MainForm : Form
         for (int i = 0; i < library.Count; i++)
         {
             boxes[i].Tag = library[i]; boxes[i].Text = library[i].ToString(); tips.SetToolTip(boxes[i], library[i].Directory);
-            boxes[i].Checked = settings.Selected.Contains(library[i].Name);
+            boxes[i].Checked = settings.Selected.Contains(library[i].Id);
         }
         updating = false; RefreshFiles();
     }
     void SetChecked(object? sender, EventArgs e)
     {
         if (updating || sender is not CheckBox { Tag: MediaSet set } box) return;
-        settings.Selected.Remove(set.Name);
+        settings.Selected.Remove(set.Id);
         if (box.Checked)
         {
             // "Выбранный набор" works like radio buttons: a new tick replaces the previous one.
@@ -362,7 +383,7 @@ internal sealed class MainForm : Form
                 foreach (var other in sets.Controls.OfType<CheckBox>()) if (other != box) other.Checked = false;
                 updating = false;
             }
-            settings.Selected.Add(set.Name);
+            settings.Selected.Add(set.Id);
         }
         Save(); Run(Rebuild);
     }
@@ -371,29 +392,55 @@ internal sealed class MainForm : Form
         settings.SingleSet = queueView.SelectedIndex == 1;
         // Keep the most recently ticked set that still exists.
         if (settings.SingleSet && settings.Selected.Count > 1)
-            settings.Selected = settings.Selected.Where(n => library.Any(s => s.Name == n)).TakeLast(1).ToList();
+            settings.Selected = settings.Selected.Where(id => library.Any(s => s.Id == id)).TakeLast(1).ToList();
         RefreshSets(); await Rebuild(); Save();
     }
     void RefreshFiles()
     {
         updating = true;
         var options = ViewOptions;
-        sorting.SelectedIndex = options.Sort == "manual" ? 1 : options.Sort == "shuffle" ? 2 : 0;
-        files.SetItems(queue.Select(p => new ThumbnailItem(p, SetName(p))));
-        files.Playing = currentFile;
-        count.Text = queue.Count == 0 ? "" : Plural(queue.Count, "файл", "файла", "файлов") + " · слева направо, сверху вниз";
+        var queues = ViewQueues;
+        string[] modes = ["По умолчанию", "Вручную", "Перемешать", .. queues.Select(q => "«" + q.Name + "»")];
+        if (!sorting.Items.Cast<string>().SequenceEqual(modes)) { sorting.Items.Clear(); sorting.Items.AddRange(modes); }
+        var saved = Saved(options);
+        int savedIndex = saved == null ? -1 : queues.IndexOf(saved);
+        sorting.SelectedIndex = savedIndex >= 0 ? 3 + savedIndex : options.Sort == "manual" || saved != null ? 1 : options.Sort == "shuffle" ? 2 : 0;
+        deleteQueue.Visible = savedIndex >= 0;
+        if (saved != null) tips.SetToolTip(deleteQueue, $"Удалить сохранённую очередь «{saved.Name}»");
+        var copies = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        files.SetItems(queue.Select(f => { int copy = copies.GetValueOrDefault(f.Key); copies[f.Key] = copy + 1; return new ThumbnailItem(f.Path, f.SetName, f.Key, copy); }));
+        files.Playing = current != null && position >= 0 && position < queue.Count ? TileId(position) : null;
         updating = false;
     }
-    static string Plural(int n, string one, string few, string many) =>
-        n + " " + (n % 10 == 1 && n % 100 != 11 ? one : n % 10 is >= 2 and <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many);
     async Task Rescan()
     {
         bool first = library.Count == 0 && !File.Exists(settingsPath);
-        library = Library.Scan(setsRoot);
-        if (first) settings.Selected = library.Take(2).Select(s => s.Name).ToList();
+        // Reading the file ids can take a moment the first time: keep the window responsive.
+        library = await Task.Run(() => Library.Scan(setsRoot));
+        Migrate();
+        if (first) settings.Selected = library.Take(2).Select(s => s.Id).ToList();
         // Watch the folders and save before starting playback, which may fail (desktop not ready yet).
         RefreshSets(); SetupWatchers(); Save();
         await Rebuild();
+    }
+    // Older versions named sets by their folder: move those settings to the set ids.
+    void Migrate()
+    {
+        var ids = library.Select(s => s.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var byName = new Dictionary<string, string>();
+        foreach (var set in library) byName.TryAdd(set.Name, set.Id);
+        string Id(string name) => ids.Contains(name) ? name : byName.TryGetValue(name, out var id) ? id : name;
+        settings.Selected = settings.Selected.Select(Id).Distinct().ToList();
+        foreach (var set in library)
+            if (!settings.Sets.ContainsKey(set.Id) && settings.Sets.Remove(set.Name, out var old)) settings.Sets[set.Id] = old;
+        foreach (var (key, options) in settings.Combinations.ToList())
+        {
+            List<string>? names;
+            try { names = JsonSerializer.Deserialize<List<string>>(key); } catch (JsonException) { continue; }
+            if (names == null) continue;
+            var moved = Library.CombinationKey(names.Select(Id));
+            if (moved != key && !settings.Combinations.ContainsKey(moved)) { settings.Combinations.Remove(key); settings.Combinations[moved] = options; }
+        }
     }
     void SetupWatchers()
     {
@@ -415,64 +462,213 @@ internal sealed class MainForm : Form
         if (exiting || IsDisposed) return;
         try { BeginInvoke(() => { scanTimer.Stop(); scanTimer.Start(); }); } catch (InvalidOperationException) { }
     }
+    // Puts the files in the order the options ask for. legacyPath gives the path older versions stored
+    // instead of a key; such entries are replaced by keys.
+    List<MediaFile> Arrange(List<MediaFile> files, SetOptions options, Func<MediaFile, string> legacyPath)
+    {
+        var saved = Saved(options);
+        // The saved queue was deleted: keep the order it had.
+        if (saved == null && options.Sort.StartsWith("saved:")) options.Sort = "manual";
+        if (options.Sort == "default") return files;
+        var order = saved?.Order ?? options.Order;
+        var byKey = new Dictionary<string, MediaFile>(StringComparer.OrdinalIgnoreCase);
+        var legacy = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files) { byKey.TryAdd(file.Key, file); legacy.TryAdd(legacyPath(file), file.Key); }
+        for (int i = 0; i < order.Count; i++)
+            if (!byKey.ContainsKey(order[i]) && legacy.TryGetValue(order[i], out var key)) order[i] = key;
+        return Library.Reconcile(files.Select(f => f.Key).ToList(), order).Select(k => byKey[k]).ToList();
+    }
+    // A set's files in its own order, each repeated as many times as set in the tile menu.
+    List<MediaFile> SetFiles(MediaSet set) =>
+        Arrange(set.Files.SelectMany(f => Enumerable.Repeat(f, CountOf(f))).ToList(), Options(set.Id), f => f.Relative);
     async Task Rebuild()
     {
-        queue = library.Where(s => settings.Selected.Contains(s.Name)).SelectMany(s => Library.Ordered(s, Options(s)).Select(f => Path.Combine(s.Directory, f))).ToList();
-        if (ActiveSets.Count > 1) queue = Library.Reconcile(queue.Select(p => Path.GetRelativePath(setsRoot, p)).ToList(), CombinedOptions()).Select(p => Path.Combine(setsRoot, p)).ToList();
+        var active = ActiveSets;
+        queue = active.SelectMany(SetFiles).ToList();
+        if (active.Count > 1) queue = Arrange(queue, CombinedOptions(), f => Path.Combine(f.SetName, f.Relative));
+        // The same wallpaper stays on screen, also when its file or set was renamed or the order changed.
+        int index = current == null ? -1 : Locate(current.Key, currentCopy);
+        if (index >= 0) { position = index; current = queue[index]; } else position = -1;
         RefreshFiles();
-        if (queue.Count == 0) { currentFile = null; player.Stop(); return; }
-        if (currentFile == null || !queue.Contains(currentFile)) await Play(queue[0]);
+        if (queue.Count == 0) { current = null; player.Stop(); return; }
+        if (current == null) await Play(ResumeIndex());
+        else if (index < 0) await Play(0);
+    }
+    // Index of the given copy of a file in the queue (the last copy if there are fewer now), or -1.
+    int Locate(string? key, int copy)
+    {
+        if (key == null) return -1;
+        var found = Enumerable.Range(0, queue.Count).Where(i => string.Equals(queue[i].Key, key, StringComparison.OrdinalIgnoreCase)).ToList();
+        return found.Count == 0 ? -1 : found[Math.Clamp(copy, 0, found.Count - 1)];
+    }
+    int CopyAt(int index) => queue.Take(index).Count(f => string.Equals(f.Key, queue[index].Key, StringComparison.OrdinalIgnoreCase));
+    string TileId(int index) => queue[index].Key + "#" + CopyAt(index);
+    // Where to continue: the wallpaper on screen, or after a restart the one that was on screen before.
+    int ResumeIndex()
+    {
+        if (current != null && position >= 0 && position < queue.Count) return position;
+        int index = Locate(settings.CurrentFile, settings.CurrentCopy);
+        if (index < 0 && settings.CurrentPath is { } path) index = queue.FindIndex(f => string.Equals(Path.Combine(f.SetName, f.Relative), path, StringComparison.OrdinalIgnoreCase));
+        return Math.Max(0, index);
     }
     void ChangeSort(bool reshuffle)
     {
-        var order = files.Items.ToList();
+        if (!reshuffle && sorting.SelectedIndex >= 3)
+        {
+            var queues = ViewQueues;
+            int index = sorting.SelectedIndex - 3;
+            if (index < queues.Count) { ViewOptions.Sort = "saved:" + queues[index].Id; Save(); Run(Rebuild); }
+            return;
+        }
+        var order = KeysOf(files.Items);
         string mode = reshuffle ? "shuffle" : sorting.SelectedIndex == 1 ? "manual" : sorting.SelectedIndex == 2 ? "shuffle" : "default";
-        if (mode == "shuffle") Random.Shared.Shuffle(CollectionsMarshal.AsSpan(order));
+        if (mode == "shuffle") Library.Shuffle(order);
         StoreViewOrder(order, mode);
     }
-    void StoreViewOrder(List<ThumbnailItem> order, string mode)
+    void StoreViewOrder(List<string> order, string mode)
     {
         var options = ViewOptions;
-        options.Sort = mode;
-        string root = ViewSet?.Directory ?? setsRoot;
-        options.Order = order.Select(item => Path.GetRelativePath(root, item.Path)).ToList();
+        if (mode == options.Sort && Saved(options) is { } saved) saved.Order = order;
+        else { options.Sort = mode; options.Order = order; }
         Save(); Run(Rebuild);
     }
     void MoveSelected(int delta) => MoveItem(files.SelectedIndex, files.SelectedIndex + delta);
     void MoveItem(int from, int to)
     {
         if (from < 0 || to < 0 || from >= files.Items.Count || to >= files.Items.Count || from == to) return;
-        var order = files.Items.ToList(); var item = order[from]; order.RemoveAt(from); order.Insert(to, item);
-        StoreViewOrder(order, "manual");
+        var order = KeysOf(files.Items); var item = order[from]; order.RemoveAt(from); order.Insert(to, item);
+        StoreViewOrder(order, EditMode);
         files.SelectedIndex = to;
     }
     void ShowSelected()
     {
-        if (files.SelectedPath is not string path) return;
-        var s = library.FirstOrDefault(s => s.Name == SetName(path));
-        if (s == null) return;
-        Run(async () =>
-        {
-            if (!settings.Selected.Contains(s.Name)) { if (settings.SingleSet) settings.Selected.Clear(); settings.Selected.Add(s.Name); RefreshSets(); await Rebuild(); Save(); }
-            await Play(path);
-        });
+        int index = files.SelectedIndex;
+        if (index < 0 || index >= queue.Count) return;
+        var key = queue[index].Key;
+        Run(async () => { if (index < queue.Count && queue[index].Key == key) await Play(index); });
+    }
+    // Asks for a name in a small dialog; null when cancelled.
+    string? AskName(string title, string placeholder, string action, string text = "")
+    {
+        using var dialog = new Form { Text = title, Font = Ui.Body, BackColor = Ui.Surface, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(420, 132), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false };
+        var input = new TextBox { Left = Ui.S(20), Top = Ui.S(22), Width = Ui.S(380), PlaceholderText = placeholder, Text = text };
+        var ok = Ui.TextButton(action, () => { }, accent: true); ok.DialogResult = DialogResult.OK;
+        ok.AutoSize = false; ok.Bounds = new Rectangle(Ui.S(260), Ui.S(76), Ui.S(140), Ui.S(36));
+        dialog.Controls.AddRange([input, ok]); dialog.AcceptButton = ok;
+        return dialog.ShowDialog(this) == DialogResult.OK ? input.Text.Trim() : null;
     }
     void CreateSet()
     {
-        using var dialog = new Form { Text = "Новый набор", Font = Ui.Body, BackColor = Ui.Surface, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(420, 132), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false };
-        var input = new TextBox { Left = Ui.S(20), Top = Ui.S(22), Width = Ui.S(380), PlaceholderText = "Название набора" };
-        var ok = Ui.TextButton("Создать", () => { }, accent: true); ok.DialogResult = DialogResult.OK;
-        ok.AutoSize = false; ok.Bounds = new Rectangle(Ui.S(280), Ui.S(76), Ui.S(120), Ui.S(36));
-        dialog.Controls.AddRange([input, ok]); dialog.AcceptButton = ok;
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        var name = input.Text.Trim();
+        if (AskName("Новый набор", "Название набора", "Создать") is not { } name) return;
         if (name.Length == 0 || name is "." or ".." || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.EndsWith('.')) { MessageBox.Show(this, "Введите допустимое название папки.", "Новый набор"); return; }
         Run(async () => { var path = Path.Combine(setsRoot, name); Directory.CreateDirectory(path); await Rescan(); OpenFolder(path); });
+    }
+    // Saves the queue as it is now under a name; it belongs to the ticked sets.
+    void SaveQueue()
+    {
+        if (queue.Count == 0) { MessageBox.Show(this, "Очередь пуста: отметьте набор слева.", "Сохранить очередь"); return; }
+        var options = ViewOptions;
+        if (AskName("Сохранить очередь", "Название очереди", "Сохранить", Saved(options)?.Name ?? "") is not { } name) return;
+        if (name.Length == 0) { MessageBox.Show(this, "Введите название очереди.", "Сохранить очередь"); return; }
+        if (name.Length > 60) name = name[..60];
+        var existing = ViewQueues.FirstOrDefault(q => string.Equals(q.Name, name, StringComparison.CurrentCultureIgnoreCase));
+        if (existing != null && existing != Saved(options) && MessageBox.Show(this, $"Очередь «{existing.Name}» для этих наборов уже есть. Заменить её?", "Сохранить очередь", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        var saved = existing ?? new SavedQueue { Sets = ActiveSets.Select(s => s.Id).ToList() };
+        if (existing == null) settings.Queues.Add(saved);
+        saved.Name = name; saved.Order = KeysOf(files.Items);
+        options.Sort = "saved:" + saved.Id;
+        Save(); Run(Rebuild);
+    }
+    void DeleteQueue()
+    {
+        if (Saved(ViewOptions) is not { } saved) return;
+        if (MessageBox.Show(this, $"Удалить сохранённую очередь «{saved.Name}»? Обои останутся в том же порядке как «Вручную».", "Wallsets", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        settings.Queues.Remove(saved);
+        foreach (var options in settings.Sets.Values.Concat(settings.Combinations.Values))
+            if (options.Sort == "saved:" + saved.Id) { options.Sort = "manual"; options.Order = [.. saved.Order]; }
+        Save(); Run(Rebuild);
+    }
+    // Right click on a tile: how many times the wallpaper is in the queue, and its own sound.
+    void ShowTileMenu(Point location)
+    {
+        int index = files.SelectedIndex;
+        if (index < 0 || index >= queue.Count) return;
+        var file = queue[index];
+        var menu = new ContextMenuStrip { Font = Ui.Body, ShowImageMargin = false, ShowCheckMargin = true, ShowItemToolTips = true };
+        var name = Path.GetFileNameWithoutExtension(file.Path);
+        var title = new ToolStripLabel(name.Length > 48 ? name[..47] + "…" : name) { Font = Ui.Strong, ForeColor = Ui.Text, ToolTipText = file.Relative };
+        var row = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = ProfessionalColors.ToolStripDropDownBackground, Margin = Padding.Empty, Padding = Ui.P(0, 2, 0, 2) };
+        var label = new Label { Text = "Сколько раз в очереди", AutoSize = true, Anchor = AnchorStyles.Left, Font = Ui.Body, ForeColor = Ui.Text, BackColor = row.BackColor, UseMnemonic = false, Margin = Ui.P(0, 0, 10, 0) };
+        var number = new NumericUpDown { Minimum = 1, Maximum = MaxCopies, Value = CountOf(file), Width = Ui.S(64), TextAlign = HorizontalAlignment.Right, Anchor = AnchorStyles.Left, Margin = Padding.Empty };
+        row.Controls.Add(label, 0, 0); row.Controls.Add(number, 1, 0);
+        var count = new ToolStripControlHost(row) { AutoSize = true, Margin = Ui.P(0, 2, 0, 2) };
+        var sound = new ToolStripMenuItem("Проигрывать со звуком") { CheckOnClick = true, Checked = Options(file.SetId).Sound.Contains(file.FileId) };
+        if (settings.Music) sound.ToolTipText = "Сейчас звук включён для всех обоев кнопкой с динамиком; эта галочка действует, когда он выключен.";
+        sound.CheckedChanged += (_, _) => SetFileSound(file, sound.Checked);
+        var show = new ToolStripMenuItem("Показать на рабочем столе", null, (_, _) => ShowSelected());
+        menu.Items.AddRange([title, new ToolStripSeparator(), count, sound, new ToolStripSeparator(), show]);
+        // Enter and Esc would otherwise be taken by the menu itself, before the number field sees them.
+        bool cancelled = false;
+        foreach (Control part in number.Controls) part.PreviewKeyDown += (_, e) => { if (e.KeyCode is Keys.Enter or Keys.Escape) e.IsInputKey = true; };
+        number.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode is not (Keys.Enter or Keys.Escape)) return;
+            cancelled = e.KeyCode == Keys.Escape; e.SuppressKeyPress = true; menu.Close();
+        };
+        menu.Opened += (_, _) => { number.Focus(); number.Select(0, number.Text.Length); };
+        // The number is applied when the menu closes; Esc closes it without a change.
+        menu.Closed += (_, e) =>
+        {
+            int value = cancelled || e.CloseReason == ToolStripDropDownCloseReason.Keyboard ? CountOf(file) : (int)number.Value;
+            BeginInvoke(() => { menu.Dispose(); SetCount(file, index, value); });
+        };
+        menu.Show(location);
+    }
+    // More copies go right after the tile that was clicked; fewer copies are taken from the end of the queue
+    // (Arrange keeps the first copies of a file). The number is kept in the set's options.
+    void SetCount(MediaFile file, int index, int value)
+    {
+        int old = CountOf(file);
+        value = Math.Clamp(value, 1, MaxCopies);
+        if (value == old || exiting) return;
+        if (index >= queue.Count || queue[index].Key != file.Key) index = queue.FindLastIndex(f => f.Key == file.Key);
+        var options = Options(file.SetId);
+        var view = ViewOptions;
+        var set = library.FirstOrDefault(s => s.Id == file.SetId);
+        if (value > old && index >= 0)
+        {
+            if (view.Sort != "default")
+            {
+                var order = Library.InsertCopies(queue.Select(f => f.Key).ToList(), index, file.Key, value - old);
+                if (Saved(view) is { } saved) saved.Order = order; else view.Order = order;
+            }
+            else if (ViewSet == null && options.Sort != "default" && set != null)
+            {
+                // The ticked sets follow each other: the copies go into the set's own order.
+                var own = SetFiles(set).Select(f => f.Key).ToList();
+                int copy = CopyAt(index), at = -1;
+                for (int i = 0, seen = 0; i < own.Count && at < 0; i++) if (own[i] == file.Key && seen++ == copy) at = i;
+                var order = Library.InsertCopies(own, at < 0 ? own.Count - 1 : at, file.Key, value - old);
+                if (Saved(options) is { } saved) saved.Order = order; else options.Order = order;
+            }
+        }
+        if (value == 1) options.Counts.Remove(file.FileId); else options.Counts[file.FileId] = value;
+        Save(); Run(Rebuild);
+    }
+    void SetFileSound(MediaFile file, bool on)
+    {
+        var list = Options(file.SetId).Sound;
+        list.Remove(file.FileId);
+        if (on) list.Add(file.FileId);
+        Save(); UpdateSound();
+        Run(async () => { if (player.Running) await player.SetSound(SoundFor(current)); });
     }
 
     // ---- playback ----
     void ResetDeadline() => nextChange = Environment.TickCount64 + (long)(settings.IntervalSeconds * 1000);
-    bool ShouldAutoPause() => locked || displayOff || settings.AutoPause && Native.DesktopCovered() || settings.PauseOnBattery && SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Offline;
+    // Videos wait for their end in this mode; pictures always use the interval.
+    bool ChangesAtEnd => settings.ByVideoLength && current != null && !Library.IsPicture(current.Path);
+    bool ShouldAutoPause() => locked || displayOff || settings.AutoPause && Native.DesktopCovered();
     // Immediate re-check after window, power or settings changes; the one-second timer is the fallback.
     void CheckAutoPause()
     {
@@ -483,36 +679,48 @@ internal sealed class MainForm : Form
             if (automatic != autoPaused && player.Running) { autoPaused = automatic; await player.Pause(userPaused || autoPaused); }
         });
     }
-    async Task Play(string path)
+    async Task Play(int index)
     {
+        var file = queue[index];
+        var path = file.Path;
         if (!File.Exists(path)) { ScheduleScan(); return; }
         autoPaused = ShouldAutoPause();
-        try { await player.Load(path, userPaused || autoPaused); }
+        try { await player.Load(path, userPaused || autoPaused, SoundFor(file)); }
         catch { playbackFault = true; player.Stop(); throw; }
-        currentFile = path; ResetDeadline(); problem = null; playbackFault = false;
+        current = file; position = index; currentCopy = CopyAt(index); videoLeft = null;
+        ResetDeadline(); problem = null; playbackFault = false;
         nextHealth = Environment.TickCount64 + 5000;
         if (lastFrame == null) nextFrame = Environment.TickCount64 + 10000;
         var title = Path.GetFileNameWithoutExtension(path);
         tray.Text = ("Wallsets · " + title).Length <= 120 ? "Wallsets · " + title : ("Wallsets · " + title)[..119] + "…";
-        files.Playing = path;
+        files.Playing = TileId(index);
+        // Remembered so that the same wallpaper comes back after a restart.
+        settings.CurrentFile = file.Key; settings.CurrentCopy = currentCopy; settings.CurrentPath = Path.Combine(file.SetName, file.Relative);
+        Save();
     }
     async Task Next()
     {
         if (queue.Count == 0) return;
-        var index = currentFile == null ? -1 : queue.IndexOf(currentFile);
-        await Play(queue[Library.AdjacentIndex(index, queue.Count, 1)]);
+        await Play(Library.AdjacentIndex(current == null ? -1 : position, queue.Count, 1));
     }
     async Task Previous()
     {
         if (queue.Count == 0) return;
-        await Play(queue[Library.AdjacentIndex(currentFile == null ? -1 : queue.IndexOf(currentFile), queue.Count, -1)]);
+        await Play(Library.AdjacentIndex(current == null ? -1 : position, queue.Count, -1));
     }
     void TogglePause() => Run(async () => { userPaused = !userPaused; if (player.Running) await player.Pause(userPaused || autoPaused); });
     internal void SetSound(bool on)
     {
         if (settings.Music == on) return;
-        settings.Music = player.Sound = on; UpdateSound(); Save();
-        Run(async () => { if (player.Running) await player.SetSound(settings.Music); });
+        settings.Music = on; UpdateSound(); Save();
+        Run(async () => { if (player.Running) await player.SetSound(SoundFor(current)); });
+    }
+    internal void SetByVideoLength(bool on)
+    {
+        if (byLength.Checked != on) byLength.Checked = on;
+        if (settings.ByVideoLength == on) return;
+        settings.ByVideoLength = on; videoLeft = null; ResetDeadline(); Save();
+        Run(async () => await player.SetLoop(!on));
     }
     void UpdateSound()
     {
@@ -548,7 +756,7 @@ internal sealed class MainForm : Form
         {
             if (player.Running && player.Attached) return;
             player.Stop(); playbackFault = false;
-            await Play(currentFile != null && queue.Contains(currentFile) ? currentFile : queue[0]);
+            await Play(ResumeIndex());
         });
     }
     async Task Tick()
@@ -561,7 +769,7 @@ internal sealed class MainForm : Form
             {
                 attachRetries--; nextHealth = Environment.TickCount64 + 3000;
                 player.Stop(); playbackFault = false;
-                await Play(currentFile != null && queue.Contains(currentFile) ? currentFile : queue[0]);
+                await Play(ResumeIndex());
             }
             return;
         }
@@ -575,7 +783,14 @@ internal sealed class MainForm : Form
         }
         bool automatic = ShouldAutoPause();
         if (automatic != autoPaused) { autoPaused = automatic; await player.Pause(userPaused || autoPaused); }
-        if (Environment.TickCount64 >= nextChange) { await Next(); return; }
+        if (ChangesAtEnd)
+        {
+            // Without looping mpv stops on the last frame of the video: then the next wallpaper comes.
+            if ((await player.OptionalProperty("eof-reached")).ValueKind == JsonValueKind.True) { await Next(); return; }
+            var left = await player.OptionalProperty("playtime-remaining");
+            videoLeft = left.ValueKind == JsonValueKind.Number ? left.GetDouble() : null;
+        }
+        else if (Environment.TickCount64 >= nextChange) { await Next(); return; }
         if (settings.WindowsFrame && nextFrame != 0 && Environment.TickCount64 >= nextFrame)
         {
             // A spare frame for the Windows background, refreshed now and then; the final one is taken at shutdown.
@@ -587,9 +802,9 @@ internal sealed class MainForm : Form
             nextHealth = Environment.TickCount64 + 5000;
             var idle = await player.Command("get_property", "idle-active");
             var ended = await player.OptionalProperty("eof-reached");
-            if (idle.ValueKind == JsonValueKind.True || ended.ValueKind == JsonValueKind.True)
+            if (idle.ValueKind == JsonValueKind.True || ended.ValueKind == JsonValueKind.True && !ChangesAtEnd)
             {
-                problem = "Файл не воспроизводится; пропуск: " + Path.GetFileName(currentFile);
+                problem = "Файл не воспроизводится; пропуск: " + Path.GetFileName(current?.Path);
                 Program.Log(new IOException(problem));
                 await Next();
             }
@@ -625,14 +840,15 @@ internal sealed class MainForm : Form
         pause.AccessibleName = userPaused ? "Продолжить" : "Пауза";
         trayPause.Text = userPaused ? "Продолжить" : "Пауза";
         if (floatingPause != null) floatingPause.Text = pause.Text;
-        var remaining = TimeSpan.FromSeconds(Math.Max(0, (int)Math.Ceiling((nextChange - Environment.TickCount64) / 1000d)));
+        var remaining = TimeSpan.FromSeconds(Math.Max(0, (int)Math.Ceiling(RemainingSeconds)));
         string countdown = remaining.TotalHours >= 1 ? $"{(int)remaining.TotalHours}:{remaining:mm\\:ss}" : $"{remaining:mm\\:ss}";
         status.ForeColor = problem != null ? Ui.Danger : queue.Count == 0 ? Ui.Muted : Ui.Text;
-        status.Text = problem ?? (queue.Count == 0 ? "Отметьте набор слева" : "Смена через " + countdown);
+        status.Text = problem ?? (queue.Count == 0 ? "Отметьте набор слева" : ChangesAtEnd && videoLeft == null ? "Смена в конце видео" : "Смена через " + countdown);
         string state = userPaused ? " · на паузе" : autoPaused ? " · автопауза (экономия энергии)" : "";
-        var tip = problem ?? (currentFile == null ? "" : "Сейчас: " + Path.GetFileNameWithoutExtension(currentFile) + state + (settings.Music ? $" · звук {settings.MusicVolume}%" : ""));
+        var tip = problem ?? (current == null ? "" : "Сейчас: " + Path.GetFileNameWithoutExtension(current.Path) + state + (SoundFor(current) ? $" · звук {settings.MusicVolume}%" : ""));
         if (tip != statusTip) { statusTip = tip; tips.SetToolTip(status, tip); }
     }
+    double RemainingSeconds => ChangesAtEnd ? videoLeft ?? 0 : (nextChange - Environment.TickCount64) / 1000d;
     void UpdateFloating()
     {
         if (!settings.Floating) { floating?.Close(); floating = null; floatingPause = null; return; }
@@ -661,11 +877,6 @@ internal sealed class MainForm : Form
             CheckAutoPause();
         });
     }
-    void PowerChanged(object? sender, PowerModeChangedEventArgs e)
-    {
-        if (exiting || e.Mode != PowerModes.StatusChange) return;
-        try { BeginInvoke(CheckAutoPause); } catch (InvalidOperationException) { }
-    }
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == 0x312)
@@ -687,7 +898,7 @@ internal sealed class MainForm : Form
         if (m.Msg == 0x16 && m.WParam != IntPtr.Zero) SessionEnding();
         base.WndProc(ref m);
     }
-    object Snapshot() => new { running = !exiting, currentFile, count = queue.Count, queue, selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, remainingSeconds = Math.Max(0, (nextChange - Environment.TickCount64) / 1000d), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, scaling = settings.Scaling, showNames = settings.ShowNames, showSetNames = settings.ShowSetNames, hotkeys = hotkeyState, visible = Visible, problem = problem ?? hotkeyProblem };
+    object Snapshot() => new { running = !exiting, currentFile = current?.Path, position, count = queue.Count, queue = queue.Select(f => f.Path), selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, byVideoLength = settings.ByVideoLength, remainingSeconds = Math.Max(0, RemainingSeconds), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, scaling = settings.Scaling, showNames = settings.ShowNames, showSetNames = settings.ShowSetNames, hotkeys = hotkeyState, visible = Visible, problem = problem ?? hotkeyProblem };
     async Task Server()
     {
         while (!cancellation.IsCancellationRequested)
@@ -721,7 +932,7 @@ internal sealed class MainForm : Form
             catch (Exception ex) { if (!exiting) Program.Log(ex); }
         }
     }
-    // "Отключить и выйти": stop the player and give Windows its own background back.
+    // "Отключить и выйти" (in the settings): stop the player and give Windows its own background back.
     void Exit()
     {
         if (exiting) return;
@@ -734,7 +945,7 @@ internal sealed class MainForm : Form
         if (cleaned) return;
         cleaned = exiting = true; timer.Stop(); scanTimer.Stop(); saveTimer.Stop(); pauseCheck.Stop(); cancellation.Cancel(); Save();
         foreach (var w in watchers) w.Dispose(); watchers.Clear();
-        SystemEvents.SessionSwitch -= SessionChanged; SystemEvents.PowerModeChanged -= PowerChanged;
+        SystemEvents.SessionSwitch -= SessionChanged;
         if (windowHook != IntPtr.Zero) { Native.UnhookWinEvent(windowHook); windowHook = IntPtr.Zero; }
         if (IsHandleCreated) SuspendHotkeys();
         if (powerNotification != IntPtr.Zero) { Native.UnregisterPowerSettingNotification(powerNotification); powerNotification = IntPtr.Zero; }

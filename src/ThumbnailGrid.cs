@@ -4,15 +4,18 @@ using System.ComponentModel;
 
 namespace Wallsets;
 
-internal sealed record ThumbnailItem(string Path, string SetName)
+// A file can be in the queue several times: Copy tells its tiles apart, Id names one tile.
+internal sealed record ThumbnailItem(string Path, string SetName, string Key, int Copy)
 {
     public string Title => System.IO.Path.GetFileNameWithoutExtension(Path);
+    public string Id => Key + "#" + Copy;
 }
 
 internal sealed class ThumbnailGrid : ScrollableControl
 {
     readonly Thumbnails thumbnails = new();
     readonly Dictionary<string, Image?> images = new(StringComparer.OrdinalIgnoreCase);
+    // Tile positions by ThumbnailItem.Id; pictures are shared by the copies of a file.
     readonly Dictionary<string, PointF> positions = new(StringComparer.OrdinalIgnoreCase);
     readonly System.Windows.Forms.Timer animation = new() { Interval = 16 };
     readonly ToolTip tooltip = new();
@@ -29,15 +32,19 @@ internal sealed class ThumbnailGrid : ScrollableControl
     public event EventHandler? OrderChanged;
     public event EventHandler? SizeIndexChanged;
     public event EventHandler? ItemActivated;
+    // Right click or the menu key on a tile; the tile is selected first. The point is in screen coordinates.
+    public event EventHandler<Point>? ItemMenu;
     public IReadOnlyList<ThumbnailItem> Items => items;
-    public string? SelectedPath => selected;
+    public string? SelectedPath => items.FirstOrDefault(i => i.Id == selected)?.Path;
     public bool IsDragging => dragging;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public int SelectedIndex { get => items.FindIndex(i => i.Path == selected); set { selected = value >= 0 && value < items.Count ? items[value].Path : null; Invalidate(); } }
+    public int SelectedIndex { get => items.FindIndex(i => i.Id == selected); set { selected = value >= 0 && value < items.Count ? items[value].Id : null; Invalidate(); } }
     float ScaleFactor => DeviceDpi / 96f;
     int Gap => (int)(10 * ScaleFactor);
     int TileWidth => tileWidth > 0 ? tileWidth : tileWidth = MeasureTileWidth();
     int ImageHeight => (int)((TileWidth - 8) * 9f / 16);
+    // Selection and the playing frame: twice the original 2 px (3 px for a dragged tile).
+    const int FrameWidth = 4, DragFrameWidth = 6;
     // Optional caption lines under the picture: file name and set name.
     int TileHeight => 8 + ImageHeight + (showNames || showSetNames ? (int)(6 * ScaleFactor) : 0) + (showNames ? (int)(22 * ScaleFactor) : 0) + (showSetNames ? (int)(19 * ScaleFactor) : 0);
     public int Columns => Math.Max(1, (ClientSize.Width - Gap) / (TileWidth + Gap));
@@ -81,7 +88,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         if (list.SequenceEqual(items)) { Invalidate(); return; }
         if (dragging) CancelDrag();
         items = list;
-        if (!items.Any(i => i.Path == selected)) selected = null;
+        if (!items.Any(i => i.Id == selected)) selected = null;
         var paths = items.Select(i => i.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var path in images.Keys.Where(p => !paths.Contains(p)).ToList()) { images[path]?.Dispose(); images.Remove(path); }
         positions.Clear(); UpdateExtent(); Invalidate();
@@ -105,7 +112,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         for (int i = 0; i < list.Count; i++)
         {
             var item = list[i]; var slot = Slot(i);
-            if (item.Path == dragged && dragging)
+            if (item.Id == dragged && dragging)
             {
                 // Where the dragged tile will land.
                 var placeholder = ScreenRect(slot); placeholder.Inflate(-2, -2);
@@ -116,13 +123,13 @@ internal sealed class ThumbnailGrid : ScrollableControl
                 e.Graphics.SmoothingMode = SmoothingMode.None;
                 continue;
             }
-            var pos = positions.TryGetValue(item.Path, out var animated) ? animated : new PointF(slot.X, slot.Y);
+            var pos = positions.TryGetValue(item.Id, out var animated) ? animated : new PointF(slot.X, slot.Y);
             var rect = ScreenRect(new Rectangle((int)pos.X, (int)pos.Y, slot.Width, slot.Height));
             if (rect.IntersectsWith(ClientRectangle)) DrawTile(e.Graphics, item, rect, i, false);
         }
         if (dragging && dragged != null)
         {
-            var item = list.First(i => i.Path == dragged);
+            var item = list.First(i => i.Id == dragged);
             DrawTile(e.Graphics, item, new Rectangle(pointer.X - grab.X, pointer.Y - grab.Y, TileWidth, TileHeight), list.IndexOf(item), true);
         }
         if (items.Count == 0) TextRenderer.DrawText(e.Graphics, "Отметьте набор слева — здесь появятся его обои", Font, ClientRectangle, Ui.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
@@ -137,7 +144,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
             var shadow = rect; shadow.Offset(4, 6);
             using var shadowPath = Ui.RoundedPath(shadow, radius); using var shadowBrush = new SolidBrush(Color.FromArgb(55, Color.Black)); g.FillPath(shadowBrush, shadowPath);
         }
-        bool marked = item.Path == selected || ghost;
+        bool marked = item.Id == selected || ghost;
         using (var tilePath = Ui.RoundedPath(rect, radius))
         using (var bg = new SolidBrush(marked ? Ui.AccentLight : Color.FromArgb(244, 246, 248)))
             g.FillPath(bg, tilePath);
@@ -174,11 +181,13 @@ internal sealed class ThumbnailGrid : ScrollableControl
             subFont ??= new Font(Font.FontFamily, Math.Max(8, Font.Size - 1));
             TextRenderer.DrawText(g, item.SetName, subFont, sub, Ui.Muted, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
         }
-        if (item.Path == selected || item.Path == playing || ghost)
+        if (item.Id == selected || item.Id == playing || ghost)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using var pen = new Pen(item.Path == playing && !ghost ? Color.FromArgb(206, 128, 32) : Ui.Accent, ghost ? 3 : 2);
-            rect.Inflate(-1, -1); using var border = Ui.RoundedPath(rect, radius); g.DrawPath(pen, border);
+            int width = ghost ? DragFrameWidth : FrameWidth;
+            using var pen = new Pen(item.Id == playing && !ghost ? Color.FromArgb(206, 128, 32) : Ui.Accent, width);
+            // The pen is centred on the path: keep the whole frame inside the tile.
+            rect.Inflate(-(width + 1) / 2, -(width + 1) / 2); using var border = Ui.RoundedPath(rect, radius); g.DrawPath(pen, border);
             g.SmoothingMode = SmoothingMode.None;
         }
     }
@@ -195,8 +204,15 @@ internal sealed class ThumbnailGrid : ScrollableControl
     }
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        base.OnMouseDown(e); if (e.Button != MouseButtons.Left) return;
-        Focus(); var index = Hit(e.Location); selected = index >= 0 ? items[index].Path : null;
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Right && !dragging)
+        {
+            Focus(); var hit = Hit(e.Location);
+            if (hit >= 0) { selected = items[hit].Id; Invalidate(); Update(); ItemMenu?.Invoke(this, PointToScreen(e.Location)); }
+            return;
+        }
+        if (e.Button != MouseButtons.Left) return;
+        Focus(); var index = Hit(e.Location); selected = index >= 0 ? items[index].Id : null;
         if (index >= 0) { press = pointer = e.Location; var rect = ScreenRect(Slot(index)); grab = new Point(e.X - rect.X, e.Y - rect.Y); dragged = selected; Capture = true; }
         Invalidate();
     }
@@ -208,15 +224,15 @@ internal sealed class ThumbnailGrid : ScrollableControl
             if (!dragging && Math.Abs(pointer.X - press.X) + Math.Abs(pointer.Y - press.Y) > SystemInformation.DragSize.Width)
             {
                 dragging = true; preview = [..items]; tooltip.Hide(this); tooltip.SetToolTip(this, ""); hovered = null; Cursor = Cursors.SizeAll;
-                for (int i = 0; i < items.Count; i++) positions[items[i].Path] = Slot(i).Location;
+                for (int i = 0; i < items.Count; i++) positions[items[i].Id] = Slot(i).Location;
                 animation.Start();
             }
             if (dragging) { UpdateTarget(); Invalidate(); }
         }
         else
         {
-            var index = Hit(e.Location); var path = index >= 0 ? items[index].Path : null;
-            if (hovered != path) { hovered = path; tooltip.SetToolTip(this, path == null ? "" : Path.GetFileName(path)); }
+            var index = Hit(e.Location); var id = index >= 0 ? items[index].Id : null;
+            if (hovered != id) { hovered = id; tooltip.SetToolTip(this, id == null ? "" : Path.GetFileName(items[index].Path)); }
         }
     }
     void UpdateTarget()
@@ -225,7 +241,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         int x = Math.Clamp(pointer.X - AutoScrollPosition.X - Gap, 0, Math.Max(0, Columns * (TileWidth + Gap) - 1));
         int y = Math.Max(0, pointer.Y - AutoScrollPosition.Y - Gap);
         int target = Math.Clamp(y / (TileHeight + Gap) * Columns + x / (TileWidth + Gap), 0, preview.Count - 1);
-        int from = preview.FindIndex(i => i.Path == dragged);
+        int from = preview.FindIndex(i => i.Id == dragged);
         if (from != target) { var item = preview[from]; preview.RemoveAt(from); preview.Insert(target, item); }
     }
     void Animate()
@@ -238,7 +254,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         }
         for (int i = 0; i < VisualItems.Count; i++)
         {
-            string key = VisualItems[i].Path; var target = Slot(i).Location;
+            string key = VisualItems[i].Id; var target = Slot(i).Location;
             var old = positions.TryGetValue(key, out var p) ? p : target;
             float dx = target.X - old.X, dy = target.Y - old.Y;
             if (Math.Abs(dx) + Math.Abs(dy) > 1) { positions[key] = new PointF(old.X + dx * .3f, old.Y + dy * .3f); moving = true; }
@@ -279,6 +295,11 @@ internal sealed class ThumbnailGrid : ScrollableControl
         base.OnKeyDown(e);
         if (e.KeyCode == Keys.Escape) { CancelDrag(); Capture = false; e.Handled = true; }
         if (e.KeyCode == Keys.Enter) { ItemActivated?.Invoke(this, EventArgs.Empty); e.Handled = true; }
+        if ((e.KeyCode == Keys.Apps || e.KeyCode == Keys.F10 && e.Shift) && SelectedIndex >= 0)
+        {
+            var r = ScreenRect(Slot(SelectedIndex));
+            ItemMenu?.Invoke(this, PointToScreen(new Point(r.X + r.Width / 2, r.Y + r.Height / 2))); e.Handled = true;
+        }
         int delta = e.KeyCode == Keys.Left ? -1 : e.KeyCode == Keys.Right ? 1 : e.KeyCode == Keys.Up ? -Columns : e.KeyCode == Keys.Down ? Columns : 0;
         if (delta != 0 && items.Count > 0) { SelectedIndex = Math.Clamp(SelectedIndex + delta, 0, items.Count - 1); var r = Slot(SelectedIndex); if (ScreenRect(r).Top < 0 || ScreenRect(r).Bottom > ClientSize.Height) AutoScrollPosition = new Point(0, Math.Max(0, r.Y - Gap)); e.Handled = true; }
     }

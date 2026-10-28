@@ -3,7 +3,6 @@ using System.Globalization;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
-using System.Runtime.InteropServices;
 
 namespace Wallsets;
 
@@ -25,6 +24,10 @@ internal sealed class Player : IDisposable
     public int Volume { get; set; } = 50;
     // fit, stretch, fill or tile; applied to every loaded file by ApplyScaling.
     public string Scaling { get; set; } = "fill";
+    // Frames per second shown at most (0: as in the file). Faster videos show every second, third ... frame.
+    public int MaxFps { get; set; }
+    // The file actually playing: the wallpaper itself or its lighter copy.
+    public string? Loaded { get; private set; }
     // Repeat the file endlessly; off when wallpapers change at the end of each video.
     public bool Loop { get; set; } = true;
     // Part of the screen for the wallpaper, in screen pixels; null is the whole screen. Applied by ApplyScaling.
@@ -37,10 +40,8 @@ internal sealed class Player : IDisposable
     {
         if (Running && Attached) return;
         Stop();
-        job = Native.CreateJobObject(IntPtr.Zero, null);
-        var limits = new Native.JOBINFO { Basic = new Native.BASICLIMIT { Flags = 0x2000 } };
-        if (job == IntPtr.Zero || !Native.SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf<Native.JOBINFO>()))
-            throw new InvalidOperationException("Не удалось создать группу процессов обоев.");
+        job = Native.KillOnCloseJob();
+        if (job == IntPtr.Zero) throw new InvalidOperationException("Не удалось создать группу процессов обоев.");
         var start = new ProcessStartInfo(Path.Combine(root, "engine", "mpv.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root };
         string[] args = ["--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--loop-file=" + LoopValue, "--aid=" + SoundValue, "--volume=" + Volume, "--volume-max=100", "--audio-client-name=Wallsets", "--hwdec=auto", "--vo=gpu", "--gpu-api=d3d11", "--gpu-context=d3d11", "--profile=fast", "--interpolation=no", "--video-sync=audio", "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=no", "--input-cursor=no", "--cursor-autohide=no", "--stop-screensaver=no", "--image-display-duration=inf", "--keepaspect=" + (Scaling == "stretch" ? "no" : "yes"), "--panscan=" + (Scaling == "fill" ? "1" : "0"), "--terminal=no", "--msg-level=all=warn", "--wid=0", "--input-ipc-server=" + PipeName];
         foreach (var arg in args) start.ArgumentList.Add(arg);
@@ -54,6 +55,7 @@ internal sealed class Player : IDisposable
         Starts++;
         if (!Native.AssignProcessToJobObject(job, process.Handle)) { Stop(); throw new InvalidOperationException("Не удалось включить автоматическое завершение проигрывателя."); }
         try { process.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
+        Native.Efficiency(process.Handle);
         for (int i = 0; i < 30; i++)
         {
             if (process.HasExited) throw new InvalidOperationException("Проигрыватель завершился. Проверьте файл engine/mpv.exe.");
@@ -65,6 +67,8 @@ internal sealed class Player : IDisposable
                 await Task.Delay(100);
             }
             catch (TimeoutException) { await Task.Delay(100); }
+            // A busy computer (for example while the optimizer checks videos) can answer later than the request waits.
+            catch (OperationCanceledException) { await Task.Delay(100); }
             catch (IOException) { await Task.Delay(100); }
         }
         Stop();
@@ -75,25 +79,27 @@ internal sealed class Player : IDisposable
     public async Task<JsonElement> Command(params object[] command)
     {
         await gate.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-            await pipe.ConnectAsync(500, timeout.Token).ConfigureAwait(false);
-            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
-            using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
-            await writer.WriteLineAsync(JsonSerializer.Serialize(new { command, request_id = 1 })).ConfigureAwait(false);
-            while (await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
-            {
-                using var json = JsonDocument.Parse(line);
-                var r = json.RootElement;
-                if (!r.TryGetProperty("request_id", out _)) continue;
-                if (r.GetProperty("error").GetString() != "success") throw new InvalidOperationException(r.GetProperty("error").GetString());
-                return r.TryGetProperty("data", out var data) ? data.Clone() : default;
-            }
-            throw new IOException("Соединение с проигрывателем закрыто.");
-        }
+        try { return await Send(PipeName, command).ConfigureAwait(false); }
         finally { gate.Release(); }
+    }
+    // One request to an mpv control pipe; also used for the optimizer's helper players.
+    public static async Task<JsonElement> Send(string pipeName, params object[] command)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await pipe.ConnectAsync(500, timeout.Token).ConfigureAwait(false);
+        using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+        using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new { command, request_id = 1 })).ConfigureAwait(false);
+        while (await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
+        {
+            using var json = JsonDocument.Parse(line);
+            var r = json.RootElement;
+            if (!r.TryGetProperty("request_id", out _)) continue;
+            if (r.GetProperty("error").GetString() != "success") throw new InvalidOperationException(r.GetProperty("error").GetString());
+            return r.TryGetProperty("data", out var data) ? data.Clone() : default;
+        }
+        throw new IOException("Соединение с проигрывателем закрыто.");
     }
 
     string SoundValue => Sound ? "auto" : "no";
@@ -106,7 +112,8 @@ internal sealed class Player : IDisposable
         await Set("aid", SoundValue);
         await Set("loop-file", LoopValue);
         await Command("loadfile", path, "replace");
-        await ApplyScaling(path);
+        Loaded = path;
+        await ApplyScaling();
     }
     static readonly string[] Sides = ["left", "top", "right", "bottom"];
     // The player window: the whole desktop layer of the primary screen.
@@ -121,21 +128,22 @@ internal sealed class Player : IDisposable
     // Fit, stretch and fill are mpv options. Tile has none: a picture smaller than the area is repeated
     // by a filter, a larger one is shown at its own size from the top left corner, like in Windows.
     // An area smaller than the screen is set as mpv's video margins; outside it the screen stays black.
-    public async Task ApplyScaling(string? path = null)
+    // The frame-rate limit drops frames before they are drawn, so the graphics card draws and the desktop
+    // is recomposed only for the frames that are shown.
+    public async Task ApplyScaling()
     {
-        string unscaled = "no", align = "0", vf = "";
+        string unscaled = "no", align = "0", tile = "";
         var window = Window;
         var box = Box(window, Area);
         bool boxed = box != window;
-        if (Scaling == "tile")
+        var (width, height, fps) = Scaling == "tile" || MaxFps > 0 ? await MediaInfo(Loaded) : default;
+        if (Scaling == "tile" && width > 0 && height > 0)
         {
-            var (width, height) = await MediaSize(path);
-            if (width > 0 && height > 0)
-            {
-                if (width >= box.Width && height >= box.Height) { unscaled = "yes"; align = "-1"; }
-                else vf = TileFilter(width, height, box.Width, box.Height);
-            }
+            if (width >= box.Width && height >= box.Height) { unscaled = "yes"; align = "-1"; }
+            else tile = TileGraph(width, height, box.Width, box.Height);
         }
+        int step = FrameStep(fps, MaxFps);
+        var vf = FilterChain(step > 1 ? $"framestep={step}" : "", tile);
         bool stretch = Scaling == "stretch";
         // mpv ignores the margins without keepaspect: in an area a stretched picture gets the area's proportions instead.
         await Set("keepaspect", stretch && !boxed ? "no" : "yes");
@@ -155,9 +163,11 @@ internal sealed class Player : IDisposable
         await Command("set_property", name, value);
         applied[name] = value;
     }
-    // Size of the loaded file's picture as decoded (before filters and the aspect override).
-    public Task<(int Width, int Height)> NativeSize(string path) => MediaSize(path);
-    async Task<(int Width, int Height)> MediaSize(string? path)
+    // Size of the loaded file's picture as decoded (before filters and the aspect override). A lighter copy
+    // has the proportions of its original.
+    public async Task<(int Width, int Height)> NativeSize() { var (width, height, _) = await MediaInfo(Loaded); return (width, height); }
+    // Size and frame rate of the loaded file; pictures have no frame rate (0).
+    async Task<(int Width, int Height, double Fps)> MediaInfo(string? path)
     {
         for (int i = 0; i < 60; i++)
         {
@@ -167,15 +177,28 @@ internal sealed class Player : IDisposable
                 {
                     var width = await OptionalProperty(w); var height = await OptionalProperty(h);
                     if (width.ValueKind == JsonValueKind.Number && height.ValueKind == JsonValueKind.Number && width.GetInt32() > 0 && height.GetInt32() > 0)
-                        return (width.GetInt32(), height.GetInt32());
+                    {
+                        var image = await OptionalProperty("current-tracks/video/image");
+                        var fps = await OptionalProperty("current-tracks/video/demux-fps");
+                        return (width.GetInt32(), height.GetInt32(), image.ValueKind != JsonValueKind.True && fps.ValueKind == JsonValueKind.Number ? fps.GetDouble() : 0);
+                    }
                 }
             await Task.Delay(50);
         }
-        return (0, 0);
+        return (0, 0, 0);
     }
-    // lavfi graph: copies side by side, then rows of them, cut to the screen size. The graph has
-    // brackets, so it is passed with mpv's %length% quoting.
-    public static string TileFilter(int width, int height, int screenWidth, int screenHeight)
+    // Every n-th frame is kept, so the motion stays even: 120 -> 30, 60 -> 30, 50 -> 25 at a limit of 30.
+    // A file slightly above the limit (60.5 at 60) is left as it is.
+    public static int FrameStep(double fps, int limit) => limit <= 0 || fps <= 0 ? 1 : Math.Max(1, (int)Math.Ceiling(fps / limit - 0.1));
+    // Joins lavfi graphs into one mpv filter. Graphs have commas and brackets, so they are passed with
+    // mpv's %length% quoting.
+    public static string FilterChain(params string[] graphs)
+    {
+        var graph = string.Join(",", graphs.Where(g => g.Length > 0));
+        return graph.Length == 0 ? "" : $"lavfi=graph=%{Encoding.UTF8.GetByteCount(graph)}%{graph}";
+    }
+    // Copies side by side, then rows of them, cut to the area size.
+    public static string TileGraph(int width, int height, int screenWidth, int screenHeight)
     {
         int columns = Math.Clamp((screenWidth + width - 1) / width, 1, 64), rows = Math.Clamp((screenHeight + height - 1) / height, 1, 64);
         var graph = new StringBuilder();
@@ -190,7 +213,7 @@ internal sealed class Player : IDisposable
             graph.Append(graph.Length > 0 ? "," : "").Append($"split={rows}{labels};{labels}vstack=inputs={rows}");
         }
         graph.Append(graph.Length > 0 ? "," : "").Append($"crop={Math.Min(screenWidth, columns * width)}:{Math.Min(screenHeight, rows * height)}:0:0");
-        return $"lavfi=graph=%{Encoding.UTF8.GetByteCount(graph.ToString())}%{graph}";
+        return graph.ToString();
     }
     // Current frame as shown, after scaling filters (used as the Windows background).
     // In an area the whole window is taken, so the black edges are in the frame too, as on the screen.
@@ -211,7 +234,7 @@ internal sealed class Player : IDisposable
         if (job != IntPtr.Zero) { Native.CloseHandle(job); job = IntPtr.Zero; }
         try { if (process is { HasExited: false }) { process.Kill(); process.WaitForExit(2000); } } catch { }
         process?.Dispose(); process = null;
-        renderer = IntPtr.Zero;
+        renderer = IntPtr.Zero; Loaded = null;
     }
     public void Dispose() => Stop();
 }

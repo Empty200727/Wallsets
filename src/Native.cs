@@ -40,11 +40,29 @@ internal static class Native
     [DllImport("kernel32.dll")] internal static extern bool SetInformationJobObject(IntPtr job, int infoClass, ref JOBINFO info, uint size);
     [DllImport("kernel32.dll")] internal static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll")] internal static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern bool SetProcessInformation(IntPtr process, int infoClass, ref THROTTLING info, uint size);
     [StructLayout(LayoutKind.Sequential)] internal struct RECT { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] internal struct POINT { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] internal struct BASICLIMIT { public long PerProcess, PerJob; public uint Flags; public UIntPtr Min, Max; public uint Active; public UIntPtr Affinity; public uint Priority, Scheduling; }
     [StructLayout(LayoutKind.Sequential)] internal struct IOCOUNTERS { public ulong A, B, C, D, E, F; }
     [StructLayout(LayoutKind.Sequential)] internal struct JOBINFO { public BASICLIMIT Basic; public IOCOUNTERS Io; public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob; }
+    [StructLayout(LayoutKind.Sequential)] struct THROTTLING { public uint Version, ControlMask, StateMask; }
+
+    // A process group whose members are ended when Wallsets ends, even if it crashes; zero on failure.
+    internal static IntPtr KillOnCloseJob()
+    {
+        var job = CreateJobObject(IntPtr.Zero, null);
+        var limits = new JOBINFO { Basic = new BASICLIMIT { Flags = 0x2000 } };
+        if (job != IntPtr.Zero && !SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf<JOBINFO>())) { CloseHandle(job); job = IntPtr.Zero; }
+        return job;
+    }
+    // Windows 11 "efficiency mode" (EcoQoS): the process runs on the energy-saving cores and clocks.
+    // Older Windows ignores it.
+    internal static void Efficiency(IntPtr process)
+    {
+        var state = new THROTTLING { Version = 1, ControlMask = 1, StateMask = 1 };
+        try { SetProcessInformation(process, 4, ref state, (uint)Marshal.SizeOf<THROTTLING>()); } catch (EntryPointNotFoundException) { }
+    }
 
     // The desktop of the primary monitor is hidden when the active window covers it (this also catches
     // always-on-top full-screen games and players) or when any ordinary window below the active one does
@@ -72,6 +90,14 @@ internal static class Native
             return false;
         }, IntPtr.Zero);
         return covered;
+    }
+    // A window of another program is active: not the desktop, the taskbar or a Wallsets window.
+    internal static bool OtherWindowActive()
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero || IsDesktop(WindowClass(foreground)) || WindowClass(foreground) is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd") return false;
+        GetWindowThreadProcessId(foreground, out var owner);
+        return owner != Environment.ProcessId && IsWindowVisible(foreground) && !IsIconic(foreground) && !IsCloaked(foreground);
     }
     // The desktop itself: "#32769" is the root desktop window, active when everything is minimized.
     static bool IsDesktop(string cls) => cls is "Progman" or "WorkerW" or "#32769";

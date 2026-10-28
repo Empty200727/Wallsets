@@ -15,6 +15,7 @@ internal sealed class SettingsForm : Form
     readonly Panel takenBox = new() { AutoScroll = true, BackColor = Color.FromArgb(246, 248, 249) };
     readonly Label taken = new() { AutoSize = true, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Color.FromArgb(246, 248, 249), UseMnemonic = false, Location = new Point(Ui.S(8), Ui.S(6)) };
     readonly Dictionary<string, string> notes = [];
+    readonly Label optimizerStatus = new() { Font = Ui.Small, ForeColor = Ui.Text, BackColor = Ui.Surface, AutoSize = false, UseMnemonic = false };
     int y;
     bool updating;
     static int CardWidth => Ui.S(600);
@@ -48,11 +49,11 @@ internal sealed class SettingsForm : Form
         AcceptButton = done; CancelButton = done;
 
         y = Ui.S(16);
-        Startup(); Preview(); Scaling(); WallpaperArea(); Sound(); Energy(); Shortcuts(); Hotkeys(); Quit();
+        Startup(); Preview(); Scaling(); WallpaperArea(); Sound(); Performance(); Energy(); Shortcuts(); Hotkeys(); Quit();
         content.Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(1, Ui.S(4)), BackColor = Ui.Window });
 
-        main.StateChanged += SyncSound;
-        FormClosed += (_, _) => { main.StateChanged -= SyncSound; main.RegisterHotkeys(); frame?.Close(); };
+        main.StateChanged += SyncSound; main.StateChanged += SyncOptimizer;
+        FormClosed += (_, _) => { main.StateChanged -= SyncSound; main.StateChanged -= SyncOptimizer; main.RegisterHotkeys(); frame?.Close(); };
         RefreshHotkeys();
     }
 
@@ -88,6 +89,35 @@ internal sealed class SettingsForm : Form
         y += section.Card.Height + Ui.S(14);
     }
     static int Indent => Ui.S(22);
+    // A row of buttons of which one is chosen, with the explanation of the chosen one under it.
+    static void Choice(Section s, (string Title, string Hint)[] options, int selected, Action<int> chosen)
+    {
+        int gap = Ui.S(8), w = (s.Width - gap * (options.Length - 1)) / options.Length;
+        var row = new Panel { Size = new Size(s.Width, Ui.S(40)), BackColor = Ui.Surface };
+        var hint = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, UseMnemonic = false };
+        for (int i = 0; i < options.Length; i++)
+        {
+            var (title, text) = options[i];
+            int index = i;
+            var option = new RadioButton { Text = title, Appearance = Appearance.Button, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(i * (w + gap), 0, w, Ui.S(40)), BackColor = Ui.Surface, ForeColor = Ui.Text, Cursor = Cursors.Hand, UseMnemonic = false, Checked = i == selected };
+            option.FlatAppearance.BorderColor = Ui.Border; option.FlatAppearance.CheckedBackColor = Ui.AccentLight;
+            option.FlatAppearance.MouseOverBackColor = Ui.Hover; option.FlatAppearance.MouseDownBackColor = Ui.Pressed;
+            option.CheckedChanged += (_, _) =>
+            {
+                option.FlatAppearance.BorderColor = option.Checked ? Ui.Accent : Ui.Border;
+                option.Font = option.Checked ? Ui.Strong : Ui.Body;
+                if (!option.Checked) return;
+                hint.Text = text; chosen(index);
+            };
+            option.FlatAppearance.BorderColor = option.Checked ? Ui.Accent : Ui.Border; option.Font = option.Checked ? Ui.Strong : Ui.Body;
+            row.Controls.Add(option);
+        }
+        s.Add(row, gap: 10);
+        hint.Text = options[selected].Hint;
+        int tallest = options.Max(o => TextRenderer.MeasureText(o.Hint, Ui.Small, new Size(s.Width, 0), TextFormatFlags.WordBreak).Height);
+        hint.Size = new Size(s.Width, tallest + Ui.S(2));
+        s.Add(hint, gap: 10);
+    }
 
     // ---- sections ----
     void Preview()
@@ -110,30 +140,7 @@ internal sealed class SettingsForm : Form
             ("fill", "Заполнение", "Картинка заполняет весь экран с сохранением пропорций, лишнее по краям обрезается."),
             ("tile", "Замостить", "Картинка в своём размере повторяется плиткой от левого верхнего угла. Картинка или видео больше экрана показываются в своём размере без повтора."),
         ];
-        int gap = Ui.S(8), w = (s.Width - gap * 3) / 4;
-        var row = new Panel { Size = new Size(s.Width, Ui.S(40)), BackColor = Ui.Surface };
-        var hint = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, UseMnemonic = false };
-        for (int i = 0; i < modes.Length; i++)
-        {
-            var (mode, title, text) = modes[i];
-            var option = new RadioButton { Text = title, Appearance = Appearance.Button, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(i * (w + gap), 0, w, Ui.S(40)), BackColor = Ui.Surface, ForeColor = Ui.Text, Cursor = Cursors.Hand, UseMnemonic = false, Checked = settings.Scaling == mode };
-            option.FlatAppearance.BorderColor = Ui.Border; option.FlatAppearance.CheckedBackColor = Ui.AccentLight;
-            option.FlatAppearance.MouseOverBackColor = Ui.Hover; option.FlatAppearance.MouseDownBackColor = Ui.Pressed;
-            option.CheckedChanged += (_, _) =>
-            {
-                option.FlatAppearance.BorderColor = option.Checked ? Ui.Accent : Ui.Border;
-                option.Font = option.Checked ? Ui.Strong : Ui.Body;
-                if (!option.Checked) return;
-                hint.Text = text; main.SetScaling(mode);
-            };
-            option.FlatAppearance.BorderColor = option.Checked ? Ui.Accent : Ui.Border; option.Font = option.Checked ? Ui.Strong : Ui.Body;
-            row.Controls.Add(option);
-        }
-        s.Add(row, gap: 10);
-        hint.Text = modes.First(m => m.Mode == settings.Scaling).Hint;
-        int tallest = modes.Max(m => TextRenderer.MeasureText(m.Hint, Ui.Small, new Size(s.Width, 0), TextFormatFlags.WordBreak).Height);
-        hint.Size = new Size(s.Width, tallest + Ui.S(2));
-        s.Add(hint, gap: 10);
+        Choice(s, modes.Select(m => (m.Title, m.Hint)).ToArray(), Array.FindIndex(modes, m => m.Mode == settings.Scaling), i => main.SetScaling(modes[i].Mode));
         End(s);
     }
     // The wallpaper can take only a part of the screen: four coordinates, a frame on the screen that follows
@@ -246,14 +253,45 @@ internal sealed class SettingsForm : Form
         SyncSound(this, EventArgs.Empty);
         End(s);
     }
+    void Performance()
+    {
+        var s = Begin("Нагрузка на видеокарту");
+        s.Add(Ui.Caption("Частота кадров обоев"), gap: 6);
+        (int Fps, string Title, string Hint)[] limits =
+        [
+            (0, "Как в видео", "Показывается каждый кадр файла. Видео с 60 или 120 кадрами в секунду нагружают видеокарту в 2–4 раза сильнее, чем с 30."),
+            (60, "До 60", "Видео с частотой выше 60 кадров в секунду показываются с 60 (или с половиной, третью … своей частоты, чтобы движение оставалось ровным)."),
+            (30, "До 30", "Рекомендуется. Движение живых обоев остаётся плавным, а видео с 60 и 120 кадрами в секунду отрисовываются в 2–4 раза реже."),
+            (15, "До 15", "Самая низкая нагрузка, движение заметно менее плавное. Подходит для медленных сцен: дождь, облака, звёзды."),
+        ];
+        Choice(s, limits.Select(l => (l.Title, l.Hint)).ToArray(), Array.FindIndex(limits, l => l.Fps == settings.MaxFps), i => main.SetMaxFps(limits[i].Fps));
+        var optimize = s.Add(Check("Облегчать тяжёлые видео"), gap: 4);
+        s.Hint("Видео больше экрана или чаще выбранной частоты один раз пережимаются в фоне под ваш экран — например, 4K со 120 кадрами в секунду в 1080p с 30. Такую копию видеокарта декодирует в несколько раз легче. Оригиналы не меняются, копии лежат в папке .cache\\optimized; пока копии нет, играет оригинал. Пережатие идёт с низким приоритетом и не идёт от батареи; в режиме «Замостить» всегда играет оригинал.", Indent);
+        optimizerStatus.Size = new Size(s.Width - Indent, TextRenderer.MeasureText("Ag", Ui.Small).Height * 3 + Ui.S(2));
+        s.Add(optimizerStatus, Indent, gap: 6);
+        var clear = Ui.TextButton("Удалить копии", () =>
+        {
+            main.ClearOptimized();
+            updating = true; optimize.Checked = false; updating = false;
+        });
+        tips.SetToolTip(clear, "Удаляет облегчённые копии и выключает облегчение: все видео играют как есть.");
+        s.Add(clear, Indent, gap: 12);
+        optimize.Checked = settings.Optimize;
+        optimize.CheckedChanged += (_, _) => { if (!updating) main.SetOptimize(optimize.Checked); };
+        SyncOptimizer(this, EventArgs.Empty);
+        End(s);
+    }
     void Energy()
     {
         var s = Begin("Экономия энергии");
         var covered = s.Add(Check("Пауза за развёрнутым окном"), gap: 4);
         s.Hint("Видео и музыка останавливаются, пока развёрнутое или полноэкранное окно закрывает рабочий стол основного монитора — даже если поверх него открыто маленькое окно или активна панель задач.", Indent);
+        var any = s.Add(Check("Пауза, пока активно любое окно"), gap: 4);
+        s.Hint("Обои играют, только когда активен сам рабочий стол или панель задач: после щелчка по рабочему столу или когда все окна свёрнуты. Окна Wallsets не в счёт. Самая большая экономия.", Indent);
         s.Hint("На паузе декодирование и отрисовка останавливаются: нагрузка на процессор и видеокарту падает почти до нуля. При блокировке компьютера и выключенном экране пауза включается всегда. Таймер смены обоев продолжает идти.");
-        covered.Checked = settings.AutoPause;
+        covered.Checked = settings.AutoPause; any.Checked = settings.PauseOnAnyWindow;
         covered.CheckedChanged += (_, _) => main.SetAutoPause(covered.Checked);
+        any.CheckedChanged += (_, _) => main.SetAnyWindowPause(any.Checked);
         End(s);
     }
     void Startup()
@@ -376,6 +414,7 @@ internal sealed class SettingsForm : Form
         music.Checked = settings.Music; volume.Value = settings.MusicVolume; volumeText.Text = settings.MusicVolume + "%";
         updating = false;
     }
+    void SyncOptimizer(object? sender, EventArgs e) => optimizerStatus.Text = main.OptimizerStatus;
     void Captured(string id, Hotkey key)
     {
         var (box, status) = hotkeys[id];

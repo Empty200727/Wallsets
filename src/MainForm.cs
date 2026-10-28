@@ -13,6 +13,7 @@ internal sealed class MainForm : Form
     readonly string settingsPath = Program.SettingsPath;
     readonly Settings settings;
     readonly Player player = new(Program.Root);
+    readonly Optimizer optimizer;
     // Plain check boxes: a set is chosen only by its tick, there is no separate highlighted row.
     readonly FlowLayoutPanel sets = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Margin = Padding.Empty, BackColor = Ui.Surface };
     readonly ThumbnailGrid files = new() { Dock = DockStyle.Fill, Margin = Padding.Empty };
@@ -72,7 +73,11 @@ internal sealed class MainForm : Form
         this.startInTray = startInTray;
         Directory.CreateDirectory(setsRoot);
         settings = Settings.Load(settingsPath);
-        player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling; player.Loop = !settings.ByVideoLength; player.Area = AreaRect;
+        player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling; player.Loop = !settings.ByVideoLength; player.Area = AreaRect; player.MaxFps = settings.MaxFps;
+        optimizer = new(settings.Optimize, settings.MaxFps);
+        optimizer.Changed += () => { try { BeginInvoke(() => StateChanged?.Invoke(this, EventArgs.Empty)); } catch (InvalidOperationException) { } };
+        // The lighter copy of the wallpaper on screen is taken at once, from the start of the video.
+        optimizer.Ready += path => { try { BeginInvoke(() => { if (path == current?.Path) Run(Reapply); }); } catch (InvalidOperationException) { } };
         Text = "Wallsets · Живые обои";
         AutoScaleMode = AutoScaleMode.None; Font = Ui.Body; BackColor = Ui.Window; ForeColor = Ui.Text;
         Icon = LoadIcon(0); tray.Icon = LoadIcon(SystemInformation.SmallIconSize.Width);
@@ -109,6 +114,7 @@ internal sealed class MainForm : Form
         FormClosing += (_, e) => { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
         FormClosed += (_, _) => Cleanup();
         SystemEvents.SessionSwitch += SessionChanged;
+        SystemEvents.DisplaySettingsChanged += DisplayChanged;
         // Foreground and minimize events re-check the automatic pause at once instead of on the next second.
         windowEvents = (_, _, _, _, _, _, _) => { pauseCheck.Stop(); pauseCheck.Start(); };
         windowHook = Native.SetWinEventHook(0x0003, 0x0017, IntPtr.Zero, windowEvents, 0, 0, 0x0002);
@@ -283,7 +289,7 @@ internal sealed class MainForm : Form
         try
         {
             await player.Command("screenshot-to-file", file, "video");
-            var (width, height) = await player.NativeSize(path);
+            var (width, height) = await player.NativeSize();
             using var stream = new MemoryStream(await File.ReadAllBytesAsync(file));
             using var shot = Image.FromStream(stream);
             var frame = new Bitmap(shot);
@@ -315,9 +321,28 @@ internal sealed class MainForm : Form
         LayoutChanged?.Invoke(this, EventArgs.Empty);
         if (layoutQueued) return;
         layoutQueued = true;
-        Run(async () => { layoutQueued = false; if (player.Running) await player.ApplyScaling(current?.Path); });
+        Run(async () => { layoutQueued = false; await Reapply(); });
     }
+    internal void SetMaxFps(int fps)
+    {
+        if (settings.MaxFps == fps) return;
+        settings.MaxFps = player.MaxFps = optimizer.MaxFps = fps; Save();
+        Run(Reapply);
+    }
+    internal void SetOptimize(bool on)
+    {
+        settings.Optimize = optimizer.Enabled = on; Save();
+        Run(Reapply);
+    }
+    // Copies are deleted with optimization switched off, or they would be made again right away.
+    internal void ClearOptimized()
+    {
+        settings.Optimize = optimizer.Enabled = false; Save();
+        Run(async () => { await Reapply(); optimizer.Clear(); });
+    }
+    internal string OptimizerStatus => optimizer.Status;
     internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
+    internal void SetAnyWindowPause(bool on) { settings.PauseOnAnyWindow = on; Save(); CheckAutoPause(); }
     internal void SetFloating(bool on) { settings.Floating = on; UpdateFloating(); Save(); }
     internal void SetVolume(int value) => volume.Value = Math.Clamp(value, 0, 100);
     internal void SetWindowsFrame(bool on)
@@ -537,6 +562,8 @@ internal sealed class MainForm : Form
         int index = current == null ? -1 : Locate(current.Key, currentCopy);
         if (index >= 0) { position = index; current = queue[index]; } else position = -1;
         RefreshFiles();
+        // The optimizer works on every set, the current queue first.
+        optimizer.Update(queue.Concat(library.SelectMany(s => s.Files)).Select(f => f.Path).Distinct().ToList());
         if (queue.Count == 0) { current = null; player.Stop(); return; }
         if (current == null) await Play(ResumeIndex());
         else if (index < 0) await Play(0);
@@ -715,7 +742,7 @@ internal sealed class MainForm : Form
     void ResetDeadline() => nextChange = Environment.TickCount64 + (long)(settings.IntervalSeconds * 1000);
     // Videos wait for their end in this mode; pictures always use the interval.
     bool ChangesAtEnd => settings.ByVideoLength && current != null && !Library.IsPicture(current.Path);
-    bool ShouldAutoPause() => locked || displayOff || settings.AutoPause && Native.DesktopCovered();
+    bool ShouldAutoPause() => locked || displayOff || settings.AutoPause && Native.DesktopCovered() || settings.PauseOnAnyWindow && Native.OtherWindowActive();
     // Immediate re-check after window, power or settings changes; the one-second timer is the fallback.
     void CheckAutoPause()
     {
@@ -732,7 +759,7 @@ internal sealed class MainForm : Form
         var path = file.Path;
         if (!File.Exists(path)) { ScheduleScan(); return; }
         autoPaused = ShouldAutoPause();
-        try { await player.Load(path, userPaused || autoPaused, SoundFor(file)); }
+        try { await player.Load(Source(path), userPaused || autoPaused, SoundFor(file)); }
         catch { playbackFault = true; player.Stop(); throw; }
         current = file; position = index; currentCopy = CopyAt(index); videoLeft = null;
         ResetDeadline(); problem = null; playbackFault = false;
@@ -745,6 +772,16 @@ internal sealed class MainForm : Form
         // Remembered so that the same wallpaper comes back after a restart.
         settings.CurrentFile = file.Key; settings.CurrentCopy = currentCopy; settings.CurrentPath = Path.Combine(file.SetName, file.Relative);
         Save();
+    }
+    // Tile shows a video at its own size, so it always takes the original.
+    string Source(string path) => settings.Scaling == "tile" ? path : optimizer.Resolve(path);
+    // After a change of scaling, area, frame-rate limit or copies: the same wallpaper again, from its copy or original.
+    async Task Reapply()
+    {
+        if (!player.Running || current == null) return;
+        var source = Source(current.Path);
+        if (source != player.Loaded) await player.Load(source, userPaused || autoPaused, SoundFor(current));
+        else await player.ApplyScaling();
     }
     async Task Next()
     {
@@ -915,6 +952,8 @@ internal sealed class MainForm : Form
         base.SetVisibleCore(value);
     }
     void ShowMain() { allowShow = true; Show(); if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); }
+    // Copies are made for the screen size: another size needs other copies.
+    void DisplayChanged(object? sender, EventArgs e) { if (!exiting) optimizer.Restart(); }
     void SessionChanged(object? sender, SessionSwitchEventArgs e)
     {
         if (exiting) return;
@@ -946,7 +985,7 @@ internal sealed class MainForm : Form
         if (m.Msg == 0x16 && m.WParam != IntPtr.Zero) SessionEnding();
         base.WndProc(ref m);
     }
-    object Snapshot() => new { running = !exiting, currentFile = current?.Path, position, count = queue.Count, queue = queue.Select(f => f.Path), selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, byVideoLength = settings.ByVideoLength, remainingSeconds = Math.Max(0, RemainingSeconds), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, scaling = settings.Scaling, showNames = settings.ShowNames, showSetNames = settings.ShowSetNames, hotkeys = hotkeyState, visible = Visible, problem = problem ?? hotkeyProblem };
+    object Snapshot() => new { running = !exiting, currentFile = current?.Path, position, count = queue.Count, queue = queue.Select(f => f.Path), selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, byVideoLength = settings.ByVideoLength, remainingSeconds = Math.Max(0, RemainingSeconds), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, scaling = settings.Scaling, maxFps = settings.MaxFps, playing = player.Loaded, optimize = settings.Optimize, optimizer = optimizer.Status, pauseOnAnyWindow = settings.PauseOnAnyWindow, showNames = settings.ShowNames, showSetNames = settings.ShowSetNames, hotkeys = hotkeyState, visible = Visible, problem = problem ?? hotkeyProblem };
     async Task Server()
     {
         while (!cancellation.IsCancellationRequested)
@@ -993,10 +1032,10 @@ internal sealed class MainForm : Form
         if (cleaned) return;
         cleaned = exiting = true; timer.Stop(); scanTimer.Stop(); saveTimer.Stop(); pauseCheck.Stop(); cancellation.Cancel(); Save();
         foreach (var w in watchers) w.Dispose(); watchers.Clear();
-        SystemEvents.SessionSwitch -= SessionChanged;
+        SystemEvents.SessionSwitch -= SessionChanged; SystemEvents.DisplaySettingsChanged -= DisplayChanged;
         if (windowHook != IntPtr.Zero) { Native.UnhookWinEvent(windowHook); windowHook = IntPtr.Zero; }
         if (IsHandleCreated) SuspendHotkeys();
         if (powerNotification != IntPtr.Zero) { Native.UnregisterPowerSettingNotification(powerNotification); powerNotification = IntPtr.Zero; }
-        floating?.Close(); player.Dispose(); tray.Visible = false; tray.Dispose();
+        floating?.Close(); player.Dispose(); optimizer.Dispose(); tray.Visible = false; tray.Dispose();
     }
 }

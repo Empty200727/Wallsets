@@ -40,6 +40,15 @@ internal static class SelfTests
             var graph = tiled[(tiled.IndexOf('%', tiled.IndexOf('%') + 1) + 1)..];
             Check(tiled.StartsWith("lavfi=graph=%" + System.Text.Encoding.UTF8.GetByteCount(graph) + "%") && graph.Contains("hstack=inputs=4") && graph.Contains("vstack=inputs=4") && graph.EndsWith("crop=1920:1080:0:0")
                 && Player.TileFilter(1920, 1080, 1920, 1080) == "lavfi=graph=%18%crop=1920:1080:0:0", "Tile: a small picture is repeated and cut to the screen size");
+            var square = new Rectangle(0, 0, 1000, 1000);
+            Check(WallpaperLayout.Place("fill", new Size(1920, 1080), square).SequenceEqual([new Rectangle(-389, 0, 1778, 1000)])
+                && WallpaperLayout.Place("fit", new Size(1920, 1080), square).SequenceEqual([new Rectangle(0, 219, 1000, 562)])
+                && WallpaperLayout.Place("stretch", new Size(1920, 1080), square).SequenceEqual([square])
+                && WallpaperLayout.Place("tile", new Size(300, 400), square).Count == 12 && WallpaperLayout.Place("tile", new Size(1200, 1100), square).SequenceEqual([new Rectangle(0, 0, 1200, 1100)]),
+                "Crop preview places the picture like the player for every scaling mode");
+            var area = new ScreenArea { Left = 100, Top = 50, Right = 1820, Bottom = 1030 };
+            Check(area.Valid && area.On(new Rectangle(0, 0, 1920, 1080)) == Rectangle.FromLTRB(100, 50, 1820, 1030) && !new ScreenArea { Right = 10, Bottom = 1080 }.Valid
+                && Player.Box(new Rectangle(0, 0, 1920, 1080), new Rectangle(1910, 0, 500, 500)) == new Rectangle(0, 0, 1920, 1080), "Wallpaper area: coordinates, too small areas and areas off the screen");
             var fresh = new Settings();
             Check(fresh.Music && fresh.MusicVolume == 60 && fresh.IntervalSeconds == 50 && !fresh.ShowNames && !fresh.ShowSetNames && fresh.AutoPause && !fresh.SingleSet && !fresh.ByVideoLength,
                 "Fresh install: sound on at 60%, change every 50 s, captions off, pause behind maximized windows on");

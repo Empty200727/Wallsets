@@ -79,7 +79,7 @@ internal sealed class Thumbnails : IDisposable
     }
     // Windows has no thumbnails for some formats without extra codecs (HEVC, AV1, WebM, AVIF on Windows 10):
     // the bundled mpv saves one frame of such files instead.
-    static Bitmap? EngineImage(string path)
+    internal static Bitmap? EngineImage(string path)
     {
         var engine = Path.Combine(Program.Root, "engine", "mpv.exe");
         if (!File.Exists(engine)) return null;

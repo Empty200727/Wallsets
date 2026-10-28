@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
@@ -26,6 +27,8 @@ internal sealed class Player : IDisposable
     public string Scaling { get; set; } = "fill";
     // Repeat the file endlessly; off when wallpapers change at the end of each video.
     public bool Loop { get; set; } = true;
+    // Part of the screen for the wallpaper, in screen pixels; null is the whole screen. Applied by ApplyScaling.
+    public Rectangle? Area { get; set; }
     // Last values sent to mpv, so unchanged options are not sent (and the video is not refiltered) again.
     readonly Dictionary<string, string> applied = [];
     public Player(string root) { this.root = root; }
@@ -45,6 +48,8 @@ internal sealed class Player : IDisposable
         applied["keepaspect"] = Scaling == "stretch" ? "no" : "yes"; applied["panscan"] = Scaling == "fill" ? "1" : "0";
         applied["aid"] = SoundValue; applied["loop-file"] = LoopValue;
         applied["video-unscaled"] = "no"; applied["video-align-x"] = applied["video-align-y"] = "0"; applied["vf"] = "";
+        applied["video-aspect-override"] = "no";
+        foreach (var side in Sides) applied["video-margin-ratio-" + side] = "0";
         process = Process.Start(start) ?? throw new InvalidOperationException("Не удалось запустить проигрыватель.");
         Starts++;
         if (!Native.AssignProcessToJobObject(job, process.Handle)) { Stop(); throw new InvalidOperationException("Не удалось включить автоматическое завершение проигрывателя."); }
@@ -103,28 +108,47 @@ internal sealed class Player : IDisposable
         await Command("loadfile", path, "replace");
         await ApplyScaling(path);
     }
-    // Fit, stretch and fill are mpv options. Tile has none: a picture smaller than the screen is repeated
+    static readonly string[] Sides = ["left", "top", "right", "bottom"];
+    // The player window: the whole desktop layer of the primary screen.
+    public Rectangle Window => renderer != IntPtr.Zero && Native.GetWindowRect(renderer, out var r) && r.Right > r.Left && r.Bottom > r.Top
+        ? Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom) : Screen.PrimaryScreen!.Bounds;
+    // Where the wallpaper is placed inside the window: the chosen area or the whole window.
+    public static Rectangle Box(Rectangle window, Rectangle? area)
+    {
+        var box = area is { } a ? Rectangle.Intersect(a, window) : window;
+        return box.Width >= 16 && box.Height >= 16 ? box : window;
+    }
+    // Fit, stretch and fill are mpv options. Tile has none: a picture smaller than the area is repeated
     // by a filter, a larger one is shown at its own size from the top left corner, like in Windows.
+    // An area smaller than the screen is set as mpv's video margins; outside it the screen stays black.
     public async Task ApplyScaling(string? path = null)
     {
         string unscaled = "no", align = "0", vf = "";
-        if (Scaling == "tile" && Native.GetWindowRect(renderer, out var screen))
+        var window = Window;
+        var box = Box(window, Area);
+        bool boxed = box != window;
+        if (Scaling == "tile")
         {
             var (width, height) = await MediaSize(path);
-            int screenWidth = screen.Right - screen.Left, screenHeight = screen.Bottom - screen.Top;
-            if (width > 0 && height > 0 && screenWidth > 0 && screenHeight > 0)
+            if (width > 0 && height > 0)
             {
-                if (width >= screenWidth && height >= screenHeight) { unscaled = "yes"; align = "-1"; }
-                else vf = TileFilter(width, height, screenWidth, screenHeight);
+                if (width >= box.Width && height >= box.Height) { unscaled = "yes"; align = "-1"; }
+                else vf = TileFilter(width, height, box.Width, box.Height);
             }
         }
-        await Set("keepaspect", Scaling == "stretch" ? "no" : "yes");
+        bool stretch = Scaling == "stretch";
+        // mpv ignores the margins without keepaspect: in an area a stretched picture gets the area's proportions instead.
+        await Set("keepaspect", stretch && !boxed ? "no" : "yes");
+        await Set("video-aspect-override", stretch && boxed ? Number(box.Width / (double)box.Height) : "no");
         await Set("panscan", Scaling == "fill" ? "1" : "0");
         await Set("video-unscaled", unscaled);
         await Set("video-align-x", align);
         await Set("video-align-y", align);
+        double[] margins = [(box.Left - window.Left) / (double)window.Width, (box.Top - window.Top) / (double)window.Height, (window.Right - box.Right) / (double)window.Width, (window.Bottom - box.Bottom) / (double)window.Height];
+        for (int i = 0; i < Sides.Length; i++) await Set("video-margin-ratio-" + Sides[i], Number(Math.Clamp(margins[i], 0, 0.95)));
         await Set("vf", vf);
     }
+    static string Number(double value) => Math.Round(value, 6).ToString(CultureInfo.InvariantCulture);
     async Task Set(string name, string value)
     {
         if (applied.TryGetValue(name, out var old) && old == value) return;
@@ -167,7 +191,8 @@ internal sealed class Player : IDisposable
         return $"lavfi=graph=%{Encoding.UTF8.GetByteCount(graph.ToString())}%{graph}";
     }
     // Current frame as shown, after scaling filters (used as the Windows background).
-    public Task SaveFrame(string file) => Command("screenshot-to-file", file, "video");
+    // In an area the whole window is taken, so the black edges are in the frame too, as on the screen.
+    public Task SaveFrame(string file) => Command("screenshot-to-file", file, Area != null && Box(Window, Area) != Window ? "window" : "video");
     public Task Pause(bool paused) => Command("set_property", "pause", paused);
     // "auto" picks the file's soundtrack again, also for the files loaded later; "no" closes the audio output.
     public async Task SetSound(bool on) { Sound = on; if (Running) await Set("aid", SoundValue); }

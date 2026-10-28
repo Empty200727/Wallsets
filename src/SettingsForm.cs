@@ -20,6 +20,7 @@ internal sealed class SettingsForm : Form
     static int CardWidth => Ui.S(600);
     // "Отключить и выйти" was pressed: the main window exits once this window is closed.
     public bool ExitRequested { get; private set; }
+    AreaFrame? frame;
 
     public SettingsForm(MainForm main)
     {
@@ -47,11 +48,11 @@ internal sealed class SettingsForm : Form
         AcceptButton = done; CancelButton = done;
 
         y = Ui.S(16);
-        Startup(); Preview(); Scaling(); Sound(); Energy(); Shortcuts(); Hotkeys(); Quit();
+        Startup(); Preview(); Scaling(); WallpaperArea(); Sound(); Energy(); Shortcuts(); Hotkeys(); Quit();
         content.Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(1, Ui.S(4)), BackColor = Ui.Window });
 
         main.StateChanged += SyncSound;
-        FormClosed += (_, _) => { main.StateChanged -= SyncSound; main.RegisterHotkeys(); };
+        FormClosed += (_, _) => { main.StateChanged -= SyncSound; main.RegisterHotkeys(); frame?.Close(); };
         RefreshHotkeys();
     }
 
@@ -133,6 +134,78 @@ internal sealed class SettingsForm : Form
         int tallest = modes.Max(m => TextRenderer.MeasureText(m.Hint, Ui.Small, new Size(s.Width, 0), TextFormatFlags.WordBreak).Height);
         hint.Size = new Size(s.Width, tallest + Ui.S(2));
         s.Add(hint, gap: 10);
+        End(s);
+    }
+    // The wallpaper can take only a part of the screen: four coordinates, a frame on the screen that follows
+    // them while they are typed, and a window that shows what the scaling cuts off.
+    void WallpaperArea()
+    {
+        var s = Begin("Область обоев");
+        s.Hint("Обои можно показать не на весь экран, а в его части. Координаты — в пикселях от левого верхнего угла экрана: где проходят верхняя, нижняя, левая и правая стороны области. Обои меняются сразу; вне области экран чёрный.");
+        var screen = main.ScreenBounds;
+        var area = settings.Area ?? new ScreenArea { Right = screen.Width, Bottom = screen.Height };
+        (string Title, int Max, int Value)[] sides = [("Верх", screen.Height, area.Top), ("Низ", screen.Height, area.Bottom), ("Лево", screen.Width, area.Left), ("Право", screen.Width, area.Right)];
+        var row = new Panel { Size = new Size(s.Width, Ui.S(34)), BackColor = Ui.Surface };
+        var fields = new NumericUpDown[sides.Length];
+        int w = s.Width / sides.Length;
+        for (int i = 0; i < sides.Length; i++)
+        {
+            var label = Ui.Caption(sides[i].Title); label.Location = new Point(i * w, (row.Height - label.PreferredHeight) / 2);
+            fields[i] = new NumericUpDown { Minimum = 0, Maximum = sides[i].Max, Value = Math.Clamp(sides[i].Value, 0, sides[i].Max), Font = Ui.Body, TextAlign = HorizontalAlignment.Right, Bounds = new Rectangle(i * w + Ui.S(52), Ui.S(2), w - Ui.S(64), Ui.S(30)) };
+            row.Controls.AddRange([label, fields[i]]);
+        }
+        s.Add(row, gap: 6);
+        var state = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, Size = new Size(s.Width, Ui.S(20)), UseMnemonic = false };
+        s.Add(state, gap: 8);
+        var buttons = new FlowLayoutPanel { Size = new Size(s.Width, Ui.S(40)), BackColor = Ui.Surface, WrapContents = false, Margin = Padding.Empty };
+        Button? show = null;
+        void ShowFrame()
+        {
+            if (frame == null) return;
+            frame.ShowArea(main.WallpaperBox);
+        }
+        void HideFrame() { frame?.Close(); frame = null; if (show != null) show.Text = "Показать область текущих обоев"; }
+        void ShowState()
+        {
+            state.ForeColor = Ui.Muted;
+            state.Text = main.AreaRect is { } r ? $"Обои в области {r.Width} × {r.Height} пикселей." : $"Обои на весь экран {screen.Width} × {screen.Height}.";
+        }
+        // Applied while the numbers are typed, not only when the field is left.
+        void Apply()
+        {
+            if (updating) return;
+            var v = new int[fields.Length];
+            for (int i = 0; i < fields.Length; i++)
+                if (!int.TryParse(fields[i].Text.Trim(), out v[i]) || v[i] < 0 || v[i] > sides[i].Max) { state.ForeColor = Ui.Danger; state.Text = $"«{sides[i].Title}»: число от 0 до {sides[i].Max}."; return; }
+            var chosen = new ScreenArea { Top = v[0], Bottom = v[1], Left = v[2], Right = v[3] };
+            if (!chosen.Valid) { state.ForeColor = Ui.Danger; state.Text = $"Нижняя сторона должна быть ниже верхней, правая — правее левой, хотя бы на {ScreenArea.Smallest} пикселя."; return; }
+            main.SetArea(chosen); ShowState(); ShowFrame();
+        }
+        foreach (var field in fields) { field.ValueChanged += (_, _) => Apply(); field.TextChanged += (_, _) => Apply(); }
+        show = Ui.TextButton("Показать область текущих обоев", () =>
+        {
+            if (frame != null) { HideFrame(); return; }
+            frame = new AreaFrame(); ShowFrame(); show!.Text = "Скрыть рамку";
+        });
+        tips.SetToolTip(show, "Рамка по краям области, где показываются обои. Она меняется сразу, пока вы вводите координаты.");
+        var reset = Ui.TextButton("Вернуть обои на весь экран", () =>
+        {
+            main.SetArea(null); HideFrame();
+            updating = true;
+            for (int i = 0; i < fields.Length; i++) fields[i].Value = i switch { 1 => screen.Height, 3 => screen.Width, _ => 0 };
+            updating = false;
+            ShowState();
+        });
+        buttons.Controls.AddRange([show, reset]);
+        s.Add(buttons, gap: 6);
+        var crop = Ui.TextButton("Показать, как обои обрезаются", () =>
+        {
+            if (OwnedForms.OfType<CropPreview>().FirstOrDefault() is { } open) { open.Activate(); return; }
+            new CropPreview(main).Show(this);
+        });
+        tips.SetToolTip(crop, "Окно в уменьшенном масштабе: картинка или видео целиком, экран и область обоев. Красным — то, что обрезается.");
+        s.Add(crop, gap: 10);
+        ShowState();
         End(s);
     }
     void Sound()

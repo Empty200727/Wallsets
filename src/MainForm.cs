@@ -63,13 +63,16 @@ internal sealed class MainForm : Form
     IntPtr powerNotification;
     internal Settings Settings => settings;
     internal event EventHandler? StateChanged;
+    // The wallpaper, its scaling or its area changed (the crop preview redraws).
+    internal event EventHandler? LayoutChanged;
+    bool layoutQueued;
 
     public MainForm(bool startInTray)
     {
         this.startInTray = startInTray;
         Directory.CreateDirectory(setsRoot);
         settings = Settings.Load(settingsPath);
-        player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling; player.Loop = !settings.ByVideoLength;
+        player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling; player.Loop = !settings.ByVideoLength; player.Area = AreaRect;
         Text = "Wallsets · Живые обои";
         AutoScaleMode = AutoScaleMode.None; Font = Ui.Body; BackColor = Ui.Window; ForeColor = Ui.Text;
         Icon = LoadIcon(0); tray.Icon = LoadIcon(SystemInformation.SmallIconSize.Width);
@@ -268,7 +271,29 @@ internal sealed class MainForm : Form
     {
         if (settings.Scaling == mode) return;
         settings.Scaling = player.Scaling = mode; Save();
-        Run(async () => { if (player.Running) await player.ApplyScaling(current?.Path); });
+        ApplyLayout();
+    }
+    internal string? CurrentPath => current?.Path;
+    internal Rectangle ScreenBounds => Screen.PrimaryScreen!.Bounds;
+    // The chosen part of the primary screen in screen pixels; null when the wallpaper covers the whole screen.
+    internal Rectangle? AreaRect => settings.Area is { Valid: true } a && a.On(ScreenBounds) is { Width: >= ScreenArea.Smallest, Height: >= ScreenArea.Smallest } r && r != ScreenBounds ? r : null;
+    internal Rectangle WallpaperBox => Player.Box(ScreenBounds, AreaRect);
+    // Null or the whole screen: back to full screen.
+    internal void SetArea(ScreenArea? area)
+    {
+        settings.Area = area is { Valid: true } ? area : null;
+        if (AreaRect == null) settings.Area = null;
+        player.Area = AreaRect;
+        saveTimer.Stop(); saveTimer.Start();
+        ApplyLayout();
+    }
+    // Sends scaling and area to the player. Quick changes (typing coordinates) are merged into one update.
+    void ApplyLayout()
+    {
+        LayoutChanged?.Invoke(this, EventArgs.Empty);
+        if (layoutQueued) return;
+        layoutQueued = true;
+        Run(async () => { layoutQueued = false; if (player.Running) await player.ApplyScaling(current?.Path); });
     }
     internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
     internal void SetFloating(bool on) { settings.Floating = on; UpdateFloating(); Save(); }
@@ -694,6 +719,7 @@ internal sealed class MainForm : Form
         var title = Path.GetFileNameWithoutExtension(path);
         tray.Text = ("Wallsets · " + title).Length <= 120 ? "Wallsets · " + title : ("Wallsets · " + title)[..119] + "…";
         files.Playing = TileId(index);
+        LayoutChanged?.Invoke(this, EventArgs.Empty);
         // Remembered so that the same wallpaper comes back after a restart.
         settings.CurrentFile = file.Key; settings.CurrentCopy = currentCopy; settings.CurrentPath = Path.Combine(file.SetName, file.Relative);
         Save();

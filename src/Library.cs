@@ -26,6 +26,18 @@ public sealed class SavedQueue
     public List<string> Order { get; set; } = [];
 }
 
+// Part of the primary screen for the wallpaper, in pixels from the screen's top left corner.
+public sealed class ScreenArea
+{
+    public int Left { get; set; }
+    public int Top { get; set; }
+    public int Right { get; set; }
+    public int Bottom { get; set; }
+    public const int Smallest = 64;
+    public bool Valid => Left >= 0 && Top >= 0 && Right - Left >= Smallest && Bottom - Top >= Smallest;
+    public Rectangle On(Rectangle screen) => Rectangle.Intersect(Rectangle.FromLTRB(screen.Left + Left, screen.Top + Top, screen.Left + Right, screen.Top + Bottom), screen);
+}
+
 public sealed class Settings
 {
     public List<string> Selected { get; set; } = [];
@@ -43,6 +55,8 @@ public sealed class Settings
     public bool ShowSetNames { get; set; }
     // How the wallpaper fits the screen: fit, stretch, fill or tile.
     public string Scaling { get; set; } = "fill";
+    // Null: the wallpaper covers the whole screen.
+    public ScreenArea? Area { get; set; }
     // Action -> combination such as "Ctrl+Alt+P"; an empty string switches the hotkey off.
     public Dictionary<string, string> Hotkeys { get; set; } = new();
     // Put the last wallpaper frame as the Windows background when the session ends, so the next boot starts with it.
@@ -83,6 +97,7 @@ public sealed class Settings
             s.MusicVolume = Math.Clamp(s.MusicVolume, 0, 100);
             if (!ScalingModes.Contains(s.Scaling)) s.Scaling = "fill";
             s.Hotkeys ??= new();
+            if (s.Area is { Valid: false }) s.Area = null;
             return s;
         }
         catch { return new(); }

@@ -69,8 +69,13 @@ internal sealed class CropPreview : Form
     static readonly Color AreaColor = Color.FromArgb(64, 214, 190);
     readonly MainForm main;
     Bitmap? image;
+    // Size of the picture in the file; the bitmap itself may be smaller.
+    Size media;
     string? loaded, message;
+    Rectangle fitted;
     int Legend => Ui.S(104);
+    int Header => Ui.S(30);
+    int Side => Ui.S(16);
 
     public CropPreview(MainForm main)
     {
@@ -85,26 +90,66 @@ internal sealed class CropPreview : Form
         FormClosed += (_, _) => main.LayoutChanged -= Changed;
         Reload();
     }
-    void Changed(object? sender, EventArgs e) { if (main.CurrentPath != loaded) Reload(); Invalidate(); }
+    void Changed(object? sender, EventArgs e) { if (main.CurrentPath != loaded) Reload(); FitWindow(); Invalidate(); }
+    // Pictures Windows can read are opened directly. A video gives the frame on screen right now from the
+    // player; when that is not possible (no player, tile mode repeats the picture) a separate mpv reads one.
     async void Reload()
     {
         var path = loaded = main.CurrentPath;
-        if (path == null) { SetImage(null, "Сейчас обои не показываются: отметьте набор в главном окне."); return; }
+        if (path == null) { SetImage(null, default, "Сейчас обои не показываются: отметьте набор в главном окне."); return; }
         message = "Загрузка кадра…"; Invalidate();
-        var frame = await Task.Run(() => Frame(path));
-        if (IsDisposed || path != loaded) { frame?.Dispose(); return; }
-        SetImage(frame, frame == null ? "Не удалось получить кадр этих обоев." : null);
-    }
-    void SetImage(Bitmap? frame, string? text) { image?.Dispose(); image = frame; message = text; Invalidate(); }
-    // Pictures Windows can read are opened directly; video and other formats give one frame through mpv.
-    static Bitmap? Frame(string path)
-    {
-        if (Readable.Contains(Path.GetExtension(path)))
+        Bitmap? frame = null; Size size = default;
+        try
         {
-            try { using var stream = new MemoryStream(File.ReadAllBytes(path)); using var picture = Image.FromStream(stream); return new Bitmap(picture); }
-            catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or OutOfMemoryException) { }
+            if (Readable.Contains(Path.GetExtension(path))) frame = await Task.Run(() => Picture(path));
+            if (frame != null) size = frame.Size;
+            else if (await main.CurrentFrame(path) is { } shot) (frame, size) = shot;
+            if (frame == null && await Task.Run(() => Thumbnails.EngineImage(path)) is { } engine) { frame = engine; size = engine.Size; }
         }
-        return Thumbnails.EngineImage(path);
+        catch (Exception ex) { Program.Log(ex); }
+        if (IsDisposed || path != loaded) { frame?.Dispose(); return; }
+        SetImage(frame == null ? null : Shrink(frame), size, frame == null ? "Не удалось получить кадр этих обоев (подробности в errors.log)." : null);
+    }
+    void SetImage(Bitmap? frame, Size size, string? text) { image?.Dispose(); image = frame; media = size; message = text; FitWindow(); Invalidate(); }
+    static Bitmap? Picture(string path)
+    {
+        try { using var stream = new MemoryStream(File.ReadAllBytes(path)); using var picture = Image.FromStream(stream); return new Bitmap(picture); }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or OutOfMemoryException) { return null; }
+    }
+    // The preview never needs more than about two thousand pixels: big frames are kept smaller.
+    static Bitmap Shrink(Bitmap frame)
+    {
+        double scale = Math.Min(1, 2048.0 / Math.Max(frame.Width, frame.Height));
+        if (scale >= 1) return frame;
+        var small = new Bitmap(Math.Max(1, (int)(frame.Width * scale)), Math.Max(1, (int)(frame.Height * scale)));
+        using (var g = Graphics.FromImage(small)) { g.InterpolationMode = InterpolationMode.HighQualityBilinear; g.DrawImage(frame, 0, 0, small.Width, small.Height); }
+        frame.Dispose();
+        return small;
+    }
+    // Everything that is drawn: the screen and the whole picture, also the parts outside the screen.
+    Rectangle World(List<Rectangle> places)
+    {
+        var world = main.ScreenBounds;
+        foreach (var p in places) world = Rectangle.Union(world, p);
+        int pad = Math.Max(world.Width, world.Height) / 30;
+        world.Inflate(pad, pad);
+        return world;
+    }
+    List<Rectangle> Places() => image == null ? [] : WallpaperLayout.Place(main.Settings.Scaling, media, main.WallpaperBox);
+    // The window takes the proportions of the drawing, as large as fits on the screen, so there are no empty
+    // bands around it. It is fitted again when the picture, the scaling or the area changes.
+    void FitWindow()
+    {
+        var world = World(Places());
+        if (world == fitted || WindowState != FormWindowState.Normal) return;
+        fitted = world;
+        var work = Screen.FromControl(this).WorkingArea;
+        int chromeWidth = Width - ClientSize.Width, chromeHeight = Height - ClientSize.Height;
+        double room = Math.Min((work.Width * 0.85 - chromeWidth - 2 * Side) / world.Width, (work.Height * 0.88 - chromeHeight - Header - Legend) / world.Height);
+        if (room <= 0) return;
+        var center = new Point(Left + Width / 2, Top + Height / 2);
+        ClientSize = new Size(Math.Max(Ui.S(560), (int)(world.Width * room) + 2 * Side), (int)(world.Height * room) + Header + Legend);
+        Location = new Point(Math.Clamp(center.X - Width / 2, work.Left, Math.Max(work.Left, work.Right - Width)), Math.Clamp(center.Y - Height / 2, work.Top, Math.Max(work.Top, work.Bottom - Height)));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -115,14 +160,10 @@ internal sealed class CropPreview : Form
         var box = main.WallpaperBox;
         bool boxed = box != screen;
         var scaling = main.Settings.Scaling;
-        List<Rectangle> places = image == null ? [] : WallpaperLayout.Place(scaling, image.Size, box);
-        var canvas = Rectangle.FromLTRB(Ui.S(16), Ui.S(30), ClientSize.Width - Ui.S(16), ClientSize.Height - Legend);
+        var places = Places();
+        var canvas = Rectangle.FromLTRB(Side, Header, ClientSize.Width - Side, ClientSize.Height - Legend);
         if (canvas.Width < 20 || canvas.Height < 20) return;
-        // Everything that is drawn fits: the screen and the whole picture, also the parts outside the screen.
-        var world = screen;
-        foreach (var p in places) world = Rectangle.Union(world, p);
-        int pad = Math.Max(world.Width, world.Height) / 30;
-        world.Inflate(pad, pad);
+        var world = World(places);
         float scale = Math.Min(canvas.Width / (float)world.Width, canvas.Height / (float)world.Height);
         float ox = canvas.X + (canvas.Width - world.Width * scale) / 2 - world.X * scale, oy = canvas.Y + (canvas.Height - world.Height * scale) / 2 - world.Y * scale;
         RectangleF Map(Rectangle r) => new(ox + r.X * scale, oy + r.Y * scale, r.Width * scale, r.Height * scale);
@@ -174,7 +215,7 @@ internal sealed class CropPreview : Form
             g.DrawRectangle(areaPen, boxRect.X, boxRect.Y, boxRect.Width, boxRect.Height);
             Label(g, $"Область обоев {box.Width} × {box.Height}", boxRect, AreaColor);
         }
-        var legend = Rectangle.FromLTRB(Ui.S(16), ClientSize.Height - Legend + Ui.S(8), ClientSize.Width - Ui.S(16), ClientSize.Height - Ui.S(8));
+        var legend = Rectangle.FromLTRB(Side, ClientSize.Height - Legend + Ui.S(8), ClientSize.Width - Side, ClientSize.Height - Ui.S(8));
         TextRenderer.DrawText(g, message == null ? Describe(scaling, places, box) : "", Font, legend, Color.White, TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
         if (message != null) TextRenderer.DrawText(g, message, Ui.Strong, canvas, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
     }
@@ -189,7 +230,7 @@ internal sealed class CropPreview : Form
     {
         if (image == null || places.Count == 0) return "";
         var name = main.CurrentPath is { } path ? Path.GetFileNameWithoutExtension(path) : "";
-        var lines = new List<string> { $"{name} · {image.Width} × {image.Height} · масштаб «{WallpaperLayout.Title(scaling)}»" };
+        var lines = new List<string> { $"{name} · {media.Width} × {media.Height} · масштаб «{WallpaperLayout.Title(scaling)}»" };
         int cutLeft = places.Max(p => box.Left - p.Left), cutTop = places.Max(p => box.Top - p.Top), cutRight = places.Max(p => p.Right - box.Right), cutBottom = places.Max(p => p.Bottom - box.Bottom);
         var cut = Sides(cutLeft, cutTop, cutRight, cutBottom);
         if (scaling == "stretch") lines.Add("Картинка растянута на всю область без сохранения пропорций: ничего не обрезано, но изображение может быть сжато или вытянуто.");

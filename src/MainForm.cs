@@ -274,6 +274,28 @@ internal sealed class MainForm : Form
         ApplyLayout();
     }
     internal string? CurrentPath => current?.Path;
+    // The frame on screen right now, taken by the player, and the size of the file's picture. Null in tile
+    // mode (the player's frame is already repeated) or when the player does not run this file.
+    internal async Task<(Bitmap Frame, Size Size)?> CurrentFrame(string path)
+    {
+        if (path != current?.Path || !player.Running || settings.Scaling == "tile") return null;
+        var file = Path.Combine(Path.GetTempPath(), $"wallsets-preview-{Environment.ProcessId}.jpg");
+        try
+        {
+            await player.Command("screenshot-to-file", file, "video");
+            var (width, height) = await player.NativeSize(path);
+            using var stream = new MemoryStream(await File.ReadAllBytesAsync(file));
+            using var shot = Image.FromStream(stream);
+            var frame = new Bitmap(shot);
+            return (frame, width > 0 && height > 0 ? new Size(width, height) : frame.Size);
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException or ArgumentException or UnauthorizedAccessException)
+        {
+            Program.Log(ex);
+            return null;
+        }
+        finally { try { File.Delete(file); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } }
+    }
     internal Rectangle ScreenBounds => Screen.PrimaryScreen!.Bounds;
     // The chosen part of the primary screen in screen pixels; null when the wallpaper covers the whole screen.
     internal Rectangle? AreaRect => settings.Area is { Valid: true } a && a.On(ScreenBounds) is { Width: >= ScreenArea.Smallest, Height: >= ScreenArea.Smallest } r && r != ScreenBounds ? r : null;

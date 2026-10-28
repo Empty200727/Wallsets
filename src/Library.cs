@@ -35,6 +35,7 @@ public sealed class ScreenArea
     public int Bottom { get; set; }
     public const int Smallest = 64;
     public bool Valid => Left >= 0 && Top >= 0 && Right - Left >= Smallest && Bottom - Top >= Smallest;
+    public ScreenArea Copy() => new() { Left = Left, Top = Top, Right = Right, Bottom = Bottom };
     public Rectangle On(Rectangle screen) => Rectangle.Intersect(Rectangle.FromLTRB(screen.Left + Left, screen.Top + Top, screen.Left + Right, screen.Top + Bottom), screen);
 }
 
@@ -57,6 +58,8 @@ public sealed class Settings
     public string Scaling { get; set; } = "fill";
     // Null: the wallpaper covers the whole screen.
     public ScreenArea? Area { get; set; }
+    // The area before "Вернуть обои на весь экран", brought back by "Вернуть редактируемые обои".
+    public ScreenArea? LastArea { get; set; }
     // Action -> combination such as "Ctrl+Alt+P"; an empty string switches the hotkey off.
     public Dictionary<string, string> Hotkeys { get; set; } = new();
     // Put the last wallpaper frame as the Windows background when the session ends, so the next boot starts with it.
@@ -98,6 +101,7 @@ public sealed class Settings
             if (!ScalingModes.Contains(s.Scaling)) s.Scaling = "fill";
             s.Hotkeys ??= new();
             if (s.Area is { Valid: false }) s.Area = null;
+            if (s.LastArea is { Valid: false }) s.LastArea = null;
             return s;
         }
         catch { return new(); }

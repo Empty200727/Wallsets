@@ -158,7 +158,7 @@ internal sealed class SettingsForm : Form
         var state = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, Size = new Size(s.Width, Ui.S(20)), UseMnemonic = false };
         s.Add(state, gap: 8);
         var buttons = new FlowLayoutPanel { Size = new Size(s.Width, Ui.S(40)), BackColor = Ui.Surface, WrapContents = false, Margin = Padding.Empty };
-        Button? show = null;
+        Button? show = null, reset = null;
         void ShowFrame()
         {
             if (frame == null) return;
@@ -169,6 +169,19 @@ internal sealed class SettingsForm : Form
         {
             state.ForeColor = Ui.Muted;
             state.Text = main.AreaRect is { } r ? $"Обои в области {r.Width} × {r.Height} пикселей." : $"Обои на весь экран {screen.Width} × {screen.Height}.";
+            if (reset == null) return;
+            // On full screen the same button brings the edited area back.
+            bool back = main.AreaRect == null && settings.LastArea is { Valid: true };
+            reset.Text = back ? "Вернуть редактируемые обои" : "Вернуть обои на весь экран";
+            reset.Enabled = back || main.AreaRect != null;
+            tips.SetToolTip(reset, back ? $"Снова показать обои в прежней области: верх {settings.LastArea!.Top}, низ {settings.LastArea.Bottom}, лево {settings.LastArea.Left}, право {settings.LastArea.Right}." : "Показать обои на весь экран. Значения полей запоминаются, их можно вернуть этой же кнопкой.");
+        }
+        void Fill(ScreenArea values)
+        {
+            updating = true;
+            int[] v = [values.Top, values.Bottom, values.Left, values.Right];
+            for (int i = 0; i < fields.Length; i++) fields[i].Value = Math.Clamp(v[i], 0, sides[i].Max);
+            updating = false;
         }
         // Applied while the numbers are typed, not only when the field is left.
         void Apply()
@@ -188,12 +201,20 @@ internal sealed class SettingsForm : Form
             frame = new AreaFrame(); ShowFrame(); show!.Text = "Скрыть рамку";
         });
         tips.SetToolTip(show, "Рамка по краям области, где показываются обои. Она меняется сразу, пока вы вводите координаты.");
-        var reset = Ui.TextButton("Вернуть обои на весь экран", () =>
+        reset = Ui.TextButton("Вернуть обои на весь экран", () =>
         {
-            main.SetArea(null); HideFrame();
-            updating = true;
-            for (int i = 0; i < fields.Length; i++) fields[i].Value = i switch { 1 => screen.Height, 3 => screen.Width, _ => 0 };
-            updating = false;
+            if (main.AreaRect != null && settings.Area != null)
+            {
+                settings.LastArea = settings.Area.Copy();
+                main.SetArea(null); HideFrame();
+                Fill(new ScreenArea { Right = screen.Width, Bottom = screen.Height });
+            }
+            else if (settings.LastArea is { Valid: true } last)
+            {
+                Fill(last);
+                main.SetArea(last.Copy()); ShowFrame();
+            }
+            main.SaveSettings();
             ShowState();
         });
         buttons.Controls.AddRange([show, reset]);

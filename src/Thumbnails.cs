@@ -101,7 +101,7 @@ internal sealed class Thumbnails : IDisposable
             using var image = Image.FromStream(stream);
             return new Bitmap(image);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or ArgumentException) { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or ArgumentException) { Program.Log(ex); return null; }
         finally { try { Directory.Delete(folder, true); } catch { } }
     }
     public void Dispose() { disposed = true; requests.CompleteAdding(); }

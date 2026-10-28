@@ -155,6 +155,8 @@ internal sealed class Player : IDisposable
         await Command("set_property", name, value);
         applied[name] = value;
     }
+    // Size of the loaded file's picture as decoded (before filters and the aspect override).
+    public Task<(int Width, int Height)> NativeSize(string path) => MediaSize(path);
     async Task<(int Width, int Height)> MediaSize(string? path)
     {
         for (int i = 0; i < 60; i++)

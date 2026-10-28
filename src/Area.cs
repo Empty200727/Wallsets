@@ -190,7 +190,8 @@ internal sealed class CropPreview : Form
             {
                 outside.Exclude(boxRect);
                 g.Clip = outside;
-                using var tint = new SolidBrush(Color.FromArgb(70, Cut));
+                // Light tint (a third of the former 70): the cut-off picture stays visible under it.
+                using var tint = new SolidBrush(Color.FromArgb(23, Cut));
                 using var dashed = new Pen(Cut, 2) { DashStyle = DashStyle.Dash };
                 foreach (var p in places) { var r = Map(p); g.FillRectangle(tint, r); g.DrawRectangle(dashed, r.X, r.Y, r.Width, r.Height); }
                 g.ResetClip();
@@ -208,22 +209,27 @@ internal sealed class CropPreview : Form
             }
         }
         using (var screenPen = new Pen(Color.FromArgb(200, 205, 210), 1)) g.DrawRectangle(screenPen, screenRect.X, screenRect.Y, screenRect.Width, screenRect.Height);
-        Label(g, $"Экран {screen.Width} × {screen.Height}", screenRect, Color.FromArgb(200, 205, 210));
+        Label(g, $"Экран {screen.Width} × {screen.Height}", screenRect, Color.FromArgb(200, 205, 210), false);
         if (boxed)
         {
             using var areaPen = new Pen(AreaColor, 2);
             g.DrawRectangle(areaPen, boxRect.X, boxRect.Y, boxRect.Width, boxRect.Height);
-            Label(g, $"Область обоев {box.Width} × {box.Height}", boxRect, AreaColor);
+            Label(g, $"Область обоев {box.Width} × {box.Height}", boxRect, AreaColor, true);
         }
         var legend = Rectangle.FromLTRB(Side, ClientSize.Height - Legend + Ui.S(8), ClientSize.Width - Side, ClientSize.Height - Ui.S(8));
         TextRenderer.DrawText(g, message == null ? Describe(scaling, places, box) : "", Font, legend, Color.White, TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
         if (message != null) TextRenderer.DrawText(g, message, Ui.Strong, canvas, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
     }
-    void Label(Graphics g, string text, RectangleF over, Color color)
+    // The screen's caption goes above the screen, the area's inside the area's top left corner, so the two
+    // never overlap, also when the area starts at the top of the screen. A dark plate keeps them readable.
+    void Label(Graphics g, string text, RectangleF over, Color color, bool inside)
     {
-        var size = TextRenderer.MeasureText(text, Ui.Small);
-        var at = new Point((int)over.X, (int)over.Y - size.Height - 2);
-        if (at.Y < 2) at = new Point((int)over.X + 4, (int)over.Y + 4);
+        var size = TextRenderer.MeasureText(text, Ui.Small, Size.Empty, TextFormatFlags.NoPrefix);
+        var at = inside ? new Point((int)over.X + Ui.S(6), (int)over.Y + Ui.S(6)) : new Point((int)over.X, (int)over.Y - size.Height - Ui.S(4));
+        // No room above the screen: its caption goes to the bottom left corner inside it.
+        if (!inside && at.Y < 2) at = new Point((int)over.X + Ui.S(6), (int)over.Bottom - size.Height - Ui.S(6));
+        using var plate = new SolidBrush(Color.FromArgb(170, 20, 22, 24));
+        g.FillRectangle(plate, at.X - Ui.S(3), at.Y - Ui.S(1), size.Width + Ui.S(6), size.Height + Ui.S(2));
         TextRenderer.DrawText(g, text, Ui.Small, at, color, TextFormatFlags.NoPrefix);
     }
     string Describe(string scaling, List<Rectangle> places, Rectangle box)

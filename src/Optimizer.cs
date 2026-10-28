@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -192,7 +193,7 @@ internal sealed class Optimizer : IDisposable
         var ru = CultureInfo.GetCultureInfo("ru-RU");
         var text = keep.Count == 0
             ? "Тяжёлых видео нет: все не больше экрана" + (maxFps > 0 ? $" и не чаще {maxFps} кадров/с." : ".")
-            : $"Готово: облегчено {keep.Count} видео, копии занимают " + (size >= 1L << 30 ? (size / (double)(1L << 30)).ToString("0.0", ru) + " ГБ." : (size >> 20) + " МБ.");
+            : $"Готово: облегчено {keep.Count(File.Exists)} видео, копии занимают " + (size >= 1L << 30 ? (size / (double)(1L << 30)).ToString("0.0", ru) + " ГБ." : (size >> 20) + " МБ.");
         if (failed > 0) text += $" Не удалось облегчить: {failed} (они играют как есть, подробности в errors.log).";
         Say(text);
     }
@@ -235,7 +236,7 @@ internal sealed class Optimizer : IDisposable
         finally { Kill(process); }
     }
     // Encoding mode of mpv: the graphics card decodes, every n-th frame is kept and scaled, the encoder writes
-    // an MP4 next to the final name, which it gets only when mpv ends without an error. A test encodes 1 second.
+    // an MP4 next to the final name, which it gets only when it is complete. A test encodes 1 second.
     async Task<bool> Encode(string path, string output, Plan plan, int codec, bool test, Action<int>? progress, CancellationToken token)
     {
         var part = output + ".part";
@@ -248,15 +249,32 @@ internal sealed class Optimizer : IDisposable
         try
         {
             using var kill = token.Register(() => Kill(process));
+            // mpv can stay open after the last frame or stop moving: after two minutes without progress it is
+            // stopped, and the copy counts if the MP4 was finished.
+            double last = -1;
+            long moved = Environment.TickCount64;
+            bool stalled = false;
             while (!process.HasExited)
             {
                 await Task.WhenAny(process.WaitForExitAsync(token), Task.Delay(1000, token));
                 token.ThrowIfCancellationRequested();
-                if (progress == null || process.HasExited) continue;
-                try { progress((int)await Number(pipe, "percent-pos")); }
+                if (process.HasExited) break;
+                try
+                {
+                    var percent = await Number(pipe, "percent-pos");
+                    if (percent != last) { last = percent; moved = Environment.TickCount64; }
+                    progress?.Invoke((int)percent);
+                }
                 catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException && !token.IsCancellationRequested) { }
+                if (Environment.TickCount64 - moved > 120_000)
+                {
+                    stalled = true;
+                    Kill(process); process.WaitForExit(5000);
+                    Program.Log(new TimeoutException($"mpv не завершился после {last:0}% пережатия, остановлен: {path}"));
+                    break;
+                }
             }
-            if (process.ExitCode != 0 || !File.Exists(part) || new FileInfo(part).Length == 0) return false;
+            if (!(stalled || process.ExitCode == 0) || !Complete(part)) return false;
             if (!test) File.Move(part, output, true);
             return true;
         }
@@ -266,11 +284,40 @@ internal sealed class Optimizer : IDisposable
             try { File.Delete(part); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
     }
-    // Helper players are hidden, at idle priority and in efficiency mode, and end together with Wallsets.
+    // A finished MP4: its top-level boxes fill the file exactly and include the index (moov) and the data
+    // (mdat). The muxer writes the index last, so a file cut off while it was written has none.
+    internal static bool Complete(string path)
+    {
+        try
+        {
+            using var file = File.OpenRead(path);
+            var header = new byte[16];
+            long at = 0, length = file.Length;
+            bool moov = false, mdat = false;
+            while (at < length)
+            {
+                file.Position = at;
+                file.ReadExactly(header, 0, 8);
+                long size = BinaryPrimitives.ReadUInt32BigEndian(header);
+                var type = Encoding.ASCII.GetString(header, 4, 4);
+                if (size == 1) { file.ReadExactly(header, 8, 8); size = (long)BinaryPrimitives.ReadUInt64BigEndian(header.AsSpan(8)); }
+                if (size < 8 || size > length - at) return false;
+                moov |= type == "moov"; mdat |= type == "mdat";
+                at += size;
+            }
+            return moov && mdat;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
+    // Helper players are hidden, at idle priority and in efficiency mode, and end together with Wallsets. Built-in
+    // scripts, media keys and the Windows media controls are off: an encoder needs none of them, and they can
+    // keep mpv from closing.
     Process Start(params string[] args)
     {
         var start = new ProcessStartInfo(engine) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = folder };
-        foreach (var arg in new[] { "--no-config", "--terminal=no", "--msg-level=all=no", "--idle=no", "--osc=no" }.Concat(args)) start.ArgumentList.Add(arg);
+        string[] quiet = ["--no-config", "--terminal=no", "--msg-level=all=no", "--idle=no", "--osc=no", "--load-scripts=no", "--ytdl=no", "--load-auto-profiles=no", "--load-stats-overlay=no",
+            "--load-console=no", "--load-select=no", "--load-positioning=no", "--load-commands=no", "--media-controls=no", "--input-media-keys=no"];
+        foreach (var arg in quiet.Concat(args)) start.ArgumentList.Add(arg);
         var process = Process.Start(start) ?? throw new InvalidOperationException("Не удалось запустить engine\\mpv.exe.");
         if (job != IntPtr.Zero) Native.AssignProcessToJobObject(job, process.Handle);
         try { process.PriorityClass = ProcessPriorityClass.Idle; } catch { }

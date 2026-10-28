@@ -51,6 +51,16 @@ internal static class SelfTests
                 && Optimizer.PlanFor(2560, 1440, 30, new Size(1920, 1200), 30) == new Optimizer.Plan(2134, 1200, 1) && Optimizer.PlanFor(2048, 1152, 30, screen, 30) == null
                 && Optimizer.PlanFor(1366, 768, 30, screen, 30) == null && Optimizer.PlanFor(0, 0, 30, screen, 30) == null,
                 "Lighter copies: scaled to cover the screen and to the frame-rate limit; files that are already light get none");
+            var box = (string type, int size) => { var b = new byte[size]; System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(b, (uint)size); System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4); return b; };
+            var mp4 = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + ".mp4");
+            File.WriteAllBytes(mp4, [.. box("ftyp", 24), .. box("moov", 40), .. box("mdat", 100)]);
+            bool whole = Optimizer.Complete(mp4);
+            File.WriteAllBytes(mp4, [.. box("ftyp", 24), .. box("mdat", 100)]);
+            bool noIndex = Optimizer.Complete(mp4);
+            File.WriteAllBytes(mp4, [.. box("ftyp", 24), .. box("moov", 40), .. box("mdat", 100)[..60]]);
+            bool cut = Optimizer.Complete(mp4);
+            File.Delete(mp4);
+            Check(whole && !noIndex && !cut, "A lighter copy counts only as a finished MP4: not without its index, not cut off");
             var square = new Rectangle(0, 0, 1000, 1000);
             Check(WallpaperLayout.Place("fill", new Size(1920, 1080), square).SequenceEqual([new Rectangle(-389, 0, 1778, 1000)])
                 && WallpaperLayout.Place("fit", new Size(1920, 1080), square).SequenceEqual([new Rectangle(0, 219, 1000, 562)])

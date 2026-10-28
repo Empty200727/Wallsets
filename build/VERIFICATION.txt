@@ -122,3 +122,19 @@ NOT CHECKED, needs real Windows 10/11 with a graphics card: NVENC/AMF/QSV/Media 
 playback of the copies on the desktop, the GPU load figures, efficiency mode, "any window" pause.
 Wallsets/Wallsets.exe and dist/Wallsets.zip in the repository are still the previous build (the Git LFS
 upload was blocked in this session): build the new ones with build/make-package.sh.
+
+Update 2026-10-28: optimizer stuck at 98%
+Reported on Windows: "Облегчение видео 20 из 26: «3755207948 — Varado Mirando Las Estrellas» — 98%" did not move.
+The file (4128x2592, 30 fps, 54 Mbit/s, no sound) encodes to the end and mpv exits under Linux mpv 0.37 and
+under the bundled mpv 0.41 in Wine. Difference on real Windows: every helper mpv also started the Windows media
+controls (SMTC), audio device monitoring and the built-in scripts; under Wine SMTC fails at once. Changes:
+- helper players run with --load-scripts=no --ytdl=no --load-auto-profiles=no --load-stats-overlay=no
+  --load-console=no --load-select=no --load-positioning=no --load-commands=no --media-controls=no
+  --input-media-keys=no; PASS the bundled mpv 0.41 accepts all of them and its log has no SMTC, hotplug
+  or script clients any more;
+- watchdog: two minutes without progress stop mpv; a copy counts only as a finished MP4 (top-level boxes
+  fill the file, moov and mdat present). PASS on real files: finished encodes yes, a file cut at 50 MB no,
+  a file of an mpv killed while encoding no. PASS under Wine with a test build that pauses one encode and
+  waits 10 s: mpv stopped, the half file dropped and logged, the next files go on;
+- the summary counts only copies that exist.
+PASS Built-in self-tests under Wine 9.0 (29 checks).

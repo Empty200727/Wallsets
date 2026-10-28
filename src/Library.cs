@@ -12,10 +12,18 @@ public sealed class SetOptions
 public sealed class Settings
 {
     public List<string> Selected { get; set; } = [];
-    // Defaults of a fresh install: change every 50 s, sound on at 60%, captions off, energy saving on.
+    // Defaults of a fresh install: change every 50 s, sound on at 60%, captions off, energy saving on,
+    // at most 30 frames per second, heavy videos lightened.
     public double IntervalSeconds { get; set; } = 50;
     public bool AutoPause { get; set; } = true;
     public bool PauseOnBattery { get; set; } = true;
+    // Pause while any other program's window is active, not only a maximized one.
+    public bool PauseOnAnyWindow { get; set; }
+    // Frames per second shown at most; 0 shows every frame of the file.
+    public int MaxFps { get; set; } = 30;
+    public static readonly int[] FpsLimits = [0, 60, 30, 15];
+    // Heavy videos get a lighter copy fitted to the screen and the frame-rate limit (see Optimizer).
+    public bool Optimize { get; set; } = true;
     public bool Floating { get; set; }
     public int ThumbnailSize { get; set; } = 1;
     public bool SingleSet { get; set; }
@@ -49,6 +57,7 @@ public sealed class Settings
             s.ThumbnailSize = Math.Clamp(s.ThumbnailSize, 0, 3);
             s.MusicVolume = Math.Clamp(s.MusicVolume, 0, 100);
             if (!ScalingModes.Contains(s.Scaling)) s.Scaling = "fill";
+            if (!FpsLimits.Contains(s.MaxFps)) s.MaxFps = 30;
             s.Hotkeys ??= new();
             return s;
         }

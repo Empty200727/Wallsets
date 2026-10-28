@@ -95,3 +95,30 @@ NOTE A self-contained single file without compression failed to start under Wine
      alignment); the compressed variant is used, which loads assemblies from memory.
 Found and fixed: when the first playback failed (desktop not ready right after sign-in), the
 folder watchers were not started and settings were not saved.
+
+Update 2026-10-28: graphics card load
+Cause: 15 of the 42 videos are 3840x2160, some at 60 and 120 frames per second (e.g. "Mahiru Shiina 4K",
+3840x2160 at 120 fps, 32 Mbit/s). mpv decoded and drew every frame, so one wallpaper kept the video
+decoder and the 3D engine of an RTX 4060 at 20-50%.
+Changes: frame-rate limit (default 30, every n-th frame through lavfi framestep, which takes D3D11 frames
+without copying them to memory); lighter copies of heavy videos (scaled to cover the screen and to the
+limit, encoded once in the background by the bundled mpv with h264_nvenc / h264_amf / h264_qsv / h264_mf);
+"Пауза, пока активно любое окно"; mpv in Windows 11 efficiency mode.
+Built on Linux with .NET SDK 10.0.113 and -p:EnableWindowsTargeting=true: no warnings.
+PASS Built-in self-tests under Wine 9.0 (21 checks, including frame step, filter chain and copy plans).
+PASS Bundled mpv 0.41 (Windows build, under Wine): framestep=4,scale=1920:1080 in encoding mode turns
+     3840x2160 at 120 fps into 1920x1080 at 30 fps; the graphics card encoders are missing under Wine
+     and end with code 2 and no file, which the optimizer treats as "try the next encoder".
+PASS mpv 0.37 on Linux: vf "lavfi=graph=%11%framestep=4" set while playing lowers estimated-vf-fps
+     from 120 to 30, also after the loop restarts; percent-pos and demux-fps are readable over IPC
+     while encoding.
+PASS Wallsets under Wine with a test build that also lists the software mpeg4 encoder: sizes and frame
+     rates read through helper players (3840x2160@120, 1920x1080@60, 1920x1080@24 - the last one needs
+     no copy), progress and the result shown in the settings, copies 1920x1080 at 30 fps; switching the
+     limit to 60 deletes the old copies and makes new ones without probing again; "Удалить копии"
+     deletes them and switches the option off.
+PASS Settings window under Wine: "Нагрузка на видеокарту" and the new pause option fit and read well.
+NOT CHECKED, needs real Windows 10/11 with a graphics card: NVENC/AMF/QSV/Media Foundation encoding,
+playback of the copies on the desktop, the GPU load figures, efficiency mode, "any window" pause.
+Wallsets/Wallsets.exe and dist/Wallsets.zip in the repository are still the previous build (the Git LFS
+upload was blocked in this session): build the new ones with build/make-package.sh.

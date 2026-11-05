@@ -24,6 +24,20 @@ internal static class SelfTests
             Check(weighted.SequenceEqual(["a", "a", "a", "b", "c"]) && Library.Reconcile(["a", "a", "a", "b", "c"], ["b", "a", "c", "a", "a"]).SequenceEqual(["b", "a", "c", "a", "a"]), "More copies go right after the clicked tile and keep their places");
             Check(Library.Reconcile(["a", "b", "c"], ["b", "a", "c", "a", "a"]).SequenceEqual(["b", "a", "c"]), "Fewer copies are removed from the end of the queue");
             Check(Library.Reconcile(["a", "a", "b", "c", "d"], ["c", "a", "b"]).SequenceEqual(["c", "a", "a", "b", "d"]), "A missing copy goes after the last copy; a new file goes to the end");
+            var audio = new SetOptions { Fixed = [] };
+            bool follows = Library.SoundOf(audio, "a", true) && !Library.SoundOf(audio, "a", false);
+            Library.SetSound(audio, "a", false, true);
+            bool own = !Library.SoundOf(audio, "a", true);
+            audio.Differ.Clear();
+            bool reset = Library.SoundOf(audio, "a", true);
+            Library.SetFixed(audio, "a", true, false);
+            bool kept = !Library.SoundOf(audio, "a", true) && !Library.SoundOf(audio, "a", false);
+            Library.SetSound(audio, "a", true, false);
+            bool fixedOn = Library.SoundOf(audio, "a", false) && Library.SoundOf(audio, "a", true);
+            Library.SetFixed(audio, "a", false, false);
+            bool unfixed = Library.SoundOf(audio, "a", false) && audio.Differ.Contains("a");
+            Check(follows && own && reset && kept && fixedOn && unfixed,
+                "Wallpaper sound: follows the button for all, can be switched alone until the next press, a fixed one keeps its own");
             Check(Library.IsPicture("x.JPG") && !Library.IsPicture("x.gif") && !Library.IsPicture("x.mp4"), "Pictures use the interval also when videos change at their end");
             Check(Library.AdjacentIndex(0, 4, -1) == 3 && Library.AdjacentIndex(3, 4, 1) == 0 && Library.AdjacentIndex(0, 1, -1) == 0 && Library.AdjacentIndex(-1, 0, -1) == -1, "Previous and next wrap correctly including empty/single queues");
             var settingsFile = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + ".json");
@@ -61,6 +75,8 @@ internal static class SelfTests
             bool cut = Optimizer.Complete(mp4);
             File.Delete(mp4);
             Check(whole && !noIndex && !cut, "A lighter copy counts only as a finished MP4: not without its index, not cut off");
+            Check(Optimizer.DriverFrom("[e][ffmpeg] h264_nvenc: The minimum required Nvidia driver for nvenc is 610.00 or newer") == "610.00" && Optimizer.DriverFrom("[e][ffmpeg] h264_nvenc: Cannot load nvcuda.dll") == null,
+                "The NVIDIA driver version NVENC asks for is read from mpv's log");
             var square = new Rectangle(0, 0, 1000, 1000);
             Check(WallpaperLayout.Place("fill", new Size(1920, 1080), square).SequenceEqual([new Rectangle(-389, 0, 1778, 1000)])
                 && WallpaperLayout.Place("fit", new Size(1920, 1080), square).SequenceEqual([new Rectangle(0, 219, 1000, 562)])

@@ -13,8 +13,15 @@ public sealed class SetOptions
     public List<string> Order { get; set; } = [];
     // File id -> how many times the file is in the queue; a missing file id means once.
     public Dictionary<string, int> Counts { get; set; } = new();
-    // File ids that play with sound even when the sound of all wallpapers is off.
+    // A wallpaper's sound follows the button for all wallpapers: pressing it switches the sound of every wallpaper
+    // on or off. Fixed ones keep their own: Sound lists those of them that play with sound. Differ lists the
+    // others that were switched on their own since the button was last pressed. Before Fixed existed, Sound meant
+    // "with sound even when the button is off", so a missing Fixed starts as a copy of Sound.
     public List<string> Sound { get; set; } = [];
+    public List<string>? Fixed { get; set; }
+    public List<string> Differ { get; set; } = [];
+    // File id -> own music, a path inside the folder "Набор музыки".
+    public Dictionary<string, string> Music { get; set; } = new();
 }
 
 // A queue saved under a name; it is offered in "Порядок" when exactly the same sets are ticked.
@@ -140,6 +147,31 @@ public static class Library
     // Hidden file in every set folder with the set's id: it moves with the folder when it is renamed.
     public const string Marker = ".wallsets";
     [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] static extern int StrCmpLogicalW(string a, string b);
+    // A wallpaper's sound under the rules described at SetOptions; "all" is the button for all wallpapers.
+    public static bool SoundOf(SetOptions o, string id, bool all) => o.Fixed?.Contains(id) == true ? o.Sound.Contains(id) : all != o.Differ.Contains(id);
+    public static void SetSound(SetOptions o, string id, bool on, bool all)
+    {
+        o.Sound.Remove(id); o.Differ.Remove(id);
+        if (o.Fixed?.Contains(id) == true) { if (on) o.Sound.Add(id); }
+        else if (on != all) o.Differ.Add(id);
+    }
+    // Fixing keeps the sound the wallpaper has now; unfixing too, until the button is pressed.
+    public static void SetFixed(SetOptions o, string id, bool on, bool all)
+    {
+        bool sound = SoundOf(o, id, all);
+        o.Fixed ??= [];
+        o.Fixed.Remove(id); o.Sound.Remove(id); o.Differ.Remove(id);
+        if (on) { o.Fixed.Add(id); if (sound) o.Sound.Add(id); }
+        else if (sound != all) o.Differ.Add(id);
+    }
+    // Music files in the folder "Набор музыки" and its subfolders, as paths inside it, in natural order.
+    public static List<string> MusicFiles(string root)
+    {
+        if (!System.IO.Directory.Exists(root)) return [];
+        return System.IO.Directory.EnumerateFiles(root, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.Hidden | FileAttributes.System })
+            .Where(f => MusicPlayer.Extensions.Contains(Path.GetExtension(f))).Select(f => Path.GetRelativePath(root, f))
+            .OrderBy(f => f, Comparer<string>.Create(StrCmpLogicalW)).ToList();
+    }
     public static bool IsPicture(string path) => Pictures.Contains(System.IO.Path.GetExtension(path));
     public static List<MediaSet> Scan(string root)
     {

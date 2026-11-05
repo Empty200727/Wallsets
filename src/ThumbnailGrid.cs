@@ -5,7 +5,8 @@ using System.ComponentModel;
 namespace Wallsets;
 
 // A file can be in the queue several times: Copy tells its tiles apart, Id names one tile.
-internal sealed record ThumbnailItem(string Path, string SetName, string Key, int Copy)
+// Badge: a short mark in the top right corner of the picture (Alert draws it red); Tip: a second tooltip line.
+internal sealed record ThumbnailItem(string Path, string SetName, string Key, int Copy, string? Badge = null, bool Alert = false, string? Tip = null)
 {
     public string Title => System.IO.Path.GetFileNameWithoutExtension(Path);
     public string Id => Key + "#" + Copy;
@@ -58,6 +59,12 @@ internal sealed class ThumbnailGrid : ScrollableControl
     void Relayout() { CancelDrag(); positions.Clear(); UpdateExtent(); Invalidate(); }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string? Playing { get => playing; set { if (playing != value) { playing = value; Invalidate(); } } }
+    // Shown in the middle while there are no tiles.
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public string EmptyText { get; set; } = "Отметьте набор слева — здесь появятся его обои";
+    // Tiles can be looked at and selected but not dragged.
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool ReadOnly { get; set; }
     public ThumbnailGrid()
     {
         AutoScroll = true; TabStop = true; BackColor = Ui.Surface; ForeColor = Ui.Text;
@@ -132,7 +139,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
             var item = list.First(i => i.Id == dragged);
             DrawTile(e.Graphics, item, new Rectangle(pointer.X - grab.X, pointer.Y - grab.Y, TileWidth, TileHeight), list.IndexOf(item), true);
         }
-        if (items.Count == 0) TextRenderer.DrawText(e.Graphics, "Отметьте набор слева — здесь появятся его обои", Font, ClientRectangle, Ui.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+        if (items.Count == 0) TextRenderer.DrawText(e.Graphics, EmptyText, Font, ClientRectangle, Ui.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
     }
     void DrawTile(Graphics g, ThumbnailItem item, Rectangle rect, int index, bool ghost)
     {
@@ -168,6 +175,13 @@ internal sealed class ThumbnailGrid : ScrollableControl
         var numberRect = new Rectangle(imageRect.X + 4, imageRect.Y + 4, (int)(30 * ScaleFactor), (int)(20 * ScaleFactor));
         using (var badge = new SolidBrush(Color.FromArgb(185, 20, 25, 27))) g.FillRectangle(badge, numberRect);
         TextRenderer.DrawText(g, (index + 1).ToString(), Font, numberRect, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        if (item.Badge != null)
+        {
+            int width = TextRenderer.MeasureText(item.Badge, Font).Width + (int)(10 * ScaleFactor);
+            var badgeRect = new Rectangle(imageRect.Right - 4 - width, imageRect.Y + 4, width, numberRect.Height);
+            using (var badge = new SolidBrush(item.Alert ? Color.FromArgb(220, Ui.Danger) : Color.FromArgb(220, 206, 128, 32))) g.FillRectangle(badge, badgeRect);
+            TextRenderer.DrawText(g, item.Badge, Font, badgeRect, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
         int y = imageRect.Bottom + (int)(5 * ScaleFactor);
         if (showNames)
         {
@@ -213,7 +227,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         }
         if (e.Button != MouseButtons.Left) return;
         Focus(); var index = Hit(e.Location); selected = index >= 0 ? items[index].Id : null;
-        if (index >= 0) { press = pointer = e.Location; var rect = ScreenRect(Slot(index)); grab = new Point(e.X - rect.X, e.Y - rect.Y); dragged = selected; Capture = true; }
+        if (index >= 0 && !ReadOnly) { press = pointer = e.Location; var rect = ScreenRect(Slot(index)); grab = new Point(e.X - rect.X, e.Y - rect.Y); dragged = selected; Capture = true; }
         Invalidate();
     }
     protected override void OnMouseMove(MouseEventArgs e)
@@ -232,7 +246,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         else
         {
             var index = Hit(e.Location); var id = index >= 0 ? items[index].Id : null;
-            if (hovered != id) { hovered = id; tooltip.SetToolTip(this, id == null ? "" : Path.GetFileName(items[index].Path)); }
+            if (hovered != id) { hovered = id; tooltip.SetToolTip(this, id == null ? "" : Path.GetFileName(items[index].Path) + (items[index].Tip is { } tip ? "\n" + tip : "")); }
         }
     }
     void UpdateTarget()

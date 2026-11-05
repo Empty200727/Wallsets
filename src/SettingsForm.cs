@@ -5,7 +5,8 @@ internal sealed class SettingsForm : Form
 {
     readonly MainForm main;
     readonly Settings settings;
-    readonly ToolTip tips = new();
+    // Explanations appear after a second over a heading or an option, so the window stays short and quiet.
+    readonly ToolTip tips = new() { InitialDelay = 1000, ReshowDelay = 500, AutoPopDelay = 30000 };
     readonly Panel content = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Ui.Window };
     readonly CheckBox music = Check("Проигрывать с музыкой");
     readonly TrackBar volume = new() { Minimum = 0, Maximum = 100, SmallChange = 5, LargeChange = 10, TickStyle = TickStyle.None, AutoSize = false, BackColor = Ui.Surface };
@@ -59,29 +60,58 @@ internal sealed class SettingsForm : Form
 
     // ---- building blocks ----
     static CheckBox Check(string text) => new() { Text = text, AutoSize = true, BackColor = Ui.Surface, ForeColor = Ui.Text, Font = Ui.Body, UseMnemonic = false, Cursor = Cursors.Hand };
-    sealed class Section(Card card)
+    sealed class Section(Card card, ToolTip tips)
     {
         public readonly Card Card = card;
         public int Y = card.HeadingHeight + Ui.S(4);
         public readonly int Left = Ui.S(20), Width = card.Width - Ui.S(40);
+        Control? last;
         public T Add<T>(T control, int indent = 0, int gap = 8) where T : Control
         {
             control.Location = new Point(Left + indent, Y);
             if (control.AutoSize) control.Size = control.PreferredSize;
             Card.Controls.Add(control);
             Y += control.Height + Ui.S(gap);
+            last = control;
             return control;
         }
-        // Wrapped secondary text under an option.
-        public Label Hint(string text, int indent = 0, int gap = 10)
+        // The explanation of the option added last (over all its parts), or of the section when nothing is added yet.
+        public void Hint(string text)
         {
-            var label = new Label { Text = text, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, UseMnemonic = false };
-            label.Size = new Size(Width - indent, TextRenderer.MeasureText(text, Ui.Small, new Size(Width - indent, 0), TextFormatFlags.WordBreak).Height + Ui.S(2));
-            Y -= Ui.S(4);
-            return Add(label, indent, gap);
+            if (last == null) { Heading(text); return; }
+            Tip(tips, last, text);
+        }
+        // The explanation of the whole section, shown over its heading.
+        public void Heading(string text)
+        {
+            var spot = new Label { BackColor = Color.Transparent, Bounds = new Rectangle(Ui.S(12), Ui.S(6), Card.Width - Ui.S(24), Card.HeadingHeight - Ui.S(6)) };
+            Card.Controls.Add(spot);
+            tips.SetToolTip(spot, Wrap(text));
         }
     }
-    Section Begin(string heading) => new(new Card { Heading = heading, Location = new Point(Ui.S(20), y), Width = CardWidth });
+    // A control and its parts get the text, except parts that already explain themselves.
+    static void Tip(ToolTip tips, Control control, string text)
+    {
+        if (string.IsNullOrEmpty(tips.GetToolTip(control))) tips.SetToolTip(control, Wrap(text));
+        foreach (Control part in control.Controls) Tip(tips, part, text);
+    }
+    // Tooltips are not wrapped by Windows: lines of about 70 characters read comfortably.
+    static string Wrap(string text, int width = 70)
+    {
+        var lines = new List<string>();
+        foreach (var paragraph in text.Split('\n'))
+        {
+            var line = "";
+            foreach (var word in paragraph.Split(' '))
+            {
+                if (line.Length > 0 && line.Length + 1 + word.Length > width) { lines.Add(line); line = ""; }
+                line = line.Length == 0 ? word : line + " " + word;
+            }
+            lines.Add(line);
+        }
+        return string.Join("\n", lines);
+    }
+    Section Begin(string heading) => new(new Card { Heading = heading, Location = new Point(Ui.S(20), y), Width = CardWidth }, tips);
     void End(Section section)
     {
         section.Card.Height = section.Y + Ui.S(8);
@@ -89,12 +119,11 @@ internal sealed class SettingsForm : Form
         y += section.Card.Height + Ui.S(14);
     }
     static int Indent => Ui.S(22);
-    // A row of buttons of which one is chosen, with the explanation of the chosen one under it.
-    static void Choice(Section s, (string Title, string Hint)[] options, int selected, Action<int> chosen)
+    // A row of buttons of which one is chosen; each explains itself in a tooltip.
+    void Choice(Section s, (string Title, string Hint)[] options, int selected, Action<int> chosen)
     {
         int gap = Ui.S(8), w = (s.Width - gap * (options.Length - 1)) / options.Length;
         var row = new Panel { Size = new Size(s.Width, Ui.S(40)), BackColor = Ui.Surface };
-        var hint = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, UseMnemonic = false };
         for (int i = 0; i < options.Length; i++)
         {
             var (title, text) = options[i];
@@ -106,17 +135,13 @@ internal sealed class SettingsForm : Form
             {
                 option.FlatAppearance.BorderColor = option.Checked ? Ui.Accent : Ui.Border;
                 option.Font = option.Checked ? Ui.Strong : Ui.Body;
-                if (!option.Checked) return;
-                hint.Text = text; chosen(index);
+                if (option.Checked) chosen(index);
             };
             option.FlatAppearance.BorderColor = option.Checked ? Ui.Accent : Ui.Border; option.Font = option.Checked ? Ui.Strong : Ui.Body;
+            tips.SetToolTip(option, Wrap(text));
             row.Controls.Add(option);
         }
-        s.Add(row, gap: 10);
-        hint.Text = options[selected].Hint;
-        int tallest = options.Max(o => TextRenderer.MeasureText(o.Hint, Ui.Small, new Size(s.Width, 0), TextFormatFlags.WordBreak).Height);
-        hint.Size = new Size(s.Width, tallest + Ui.S(2));
-        s.Add(hint, gap: 10);
+        s.Add(row, gap: 12);
     }
 
     // ---- sections ----
@@ -247,7 +272,7 @@ internal sealed class SettingsForm : Form
         volumeText.Location = new Point(volume.Right + Ui.S(8), (row.Height - volumeText.PreferredHeight) / 2);
         row.Controls.AddRange([label, volume, volumeText]);
         s.Add(row, gap: 10);
-        s.Hint("Своя громкость обоев: громкость Windows и других программ не меняется (общая громкость Windows действует поверх). В микшере громкости Windows обои подписаны «Wallsets». Пауза останавливает и музыку.");
+        s.Hint("Своя громкость обоев: громкость Windows и других программ не меняется (общая громкость Windows действует поверх). В микшере громкости Windows обои подписаны «Wallsets». Пауза останавливает и музыку. Звук и свою музыку для отдельных обоев можно выбрать правой кнопкой по превью в главном окне.");
         music.CheckedChanged += (_, _) => { if (!updating) main.SetSound(music.Checked); };
         volume.ValueChanged += (_, _) => { volumeText.Text = volume.Value + "%"; if (!updating) main.SetVolume(volume.Value); };
         SyncSound(this, EventArgs.Empty);
@@ -266,7 +291,7 @@ internal sealed class SettingsForm : Form
         ];
         Choice(s, limits.Select(l => (l.Title, l.Hint)).ToArray(), Array.FindIndex(limits, l => l.Fps == settings.MaxFps), i => main.SetMaxFps(limits[i].Fps));
         var optimize = s.Add(Check("Облегчать тяжёлые видео"), gap: 4);
-        s.Hint("Видео больше экрана или чаще выбранной частоты один раз пережимаются в фоне под ваш экран — например, 4K со 120 кадрами в секунду в 1080p с 30. Такую копию видеокарта декодирует в несколько раз легче. Оригиналы не меняются, копии лежат в папке .cache\\optimized; пока копии нет, играет оригинал. Пережатие идёт с низким приоритетом и не идёт от батареи; в режиме «Замостить» всегда играет оригинал.", Indent);
+        s.Hint("Видео больше экрана или чаще выбранной частоты один раз пережимаются в фоне под ваш экран — например, 4K со 120 кадрами в секунду в 1080p с 30. Такую копию видеокарта декодирует в несколько раз легче. Оригиналы не меняются, копии лежат в папке .cache\\optimized; пока копии нет, играет оригинал. Пережатие идёт с низким приоритетом и не идёт от батареи; в режиме «Замостить» всегда играет оригинал.");
         optimizerStatus.Size = new Size(s.Width - Indent, TextRenderer.MeasureText("Ag", Ui.Small).Height * 3 + Ui.S(2));
         s.Add(optimizerStatus, Indent, gap: 6);
         var clear = Ui.TextButton("Удалить копии", () =>
@@ -275,7 +300,15 @@ internal sealed class SettingsForm : Form
             updating = true; optimize.Checked = false; updating = false;
         });
         tips.SetToolTip(clear, "Удаляет облегчённые копии и выключает облегчение: все видео играют как есть.");
-        s.Add(clear, Indent, gap: 12);
+        var list = Ui.TextButton("Показать облегчённые и необлегчённые видео", () =>
+        {
+            if (OwnedForms.OfType<OptimizerForm>().FirstOrDefault() is { } open) { open.Activate(); return; }
+            new OptimizerForm(main).Show(this);
+        });
+        var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Ui.Surface, Margin = Padding.Empty };
+        list.Margin = Ui.P(0, 0, 8, 0); clear.Margin = Padding.Empty;
+        buttons.Controls.AddRange([list, clear]);
+        s.Add(buttons, Indent, gap: 12);
         optimize.Checked = settings.Optimize;
         optimize.CheckedChanged += (_, _) => { if (!updating) main.SetOptimize(optimize.Checked); };
         SyncOptimizer(this, EventArgs.Empty);
@@ -285,10 +318,10 @@ internal sealed class SettingsForm : Form
     {
         var s = Begin("Экономия энергии");
         var covered = s.Add(Check("Пауза за развёрнутым окном"), gap: 4);
-        s.Hint("Видео и музыка останавливаются, пока развёрнутое или полноэкранное окно закрывает рабочий стол основного монитора — даже если поверх него открыто маленькое окно или активна панель задач.", Indent);
+        s.Hint("Видео и музыка останавливаются, пока развёрнутое или полноэкранное окно закрывает рабочий стол основного монитора — даже если поверх него открыто маленькое окно или активна панель задач.");
         var any = s.Add(Check("Пауза, пока активно любое окно"), gap: 4);
-        s.Hint("Обои играют, только когда активен сам рабочий стол или панель задач: после щелчка по рабочему столу или когда все окна свёрнуты. Окна Wallsets не в счёт. Самая большая экономия.", Indent);
-        s.Hint("На паузе декодирование и отрисовка останавливаются: нагрузка на процессор и видеокарту падает почти до нуля. При блокировке компьютера и выключенном экране пауза включается всегда. Таймер смены обоев продолжает идти.");
+        s.Hint("Обои играют, только когда активен сам рабочий стол или панель задач: после щелчка по рабочему столу или когда все окна свёрнуты. Окна Wallsets не в счёт. Самая большая экономия.");
+        s.Heading("На паузе декодирование и отрисовка останавливаются: нагрузка на процессор и видеокарту падает почти до нуля. При блокировке компьютера и выключенном экране пауза включается всегда. Таймер смены обоев продолжает идти.");
         covered.Checked = settings.AutoPause; any.Checked = settings.PauseOnAnyWindow;
         covered.CheckedChanged += (_, _) => main.SetAutoPause(covered.Checked);
         any.CheckedChanged += (_, _) => main.SetAnyWindowPause(any.Checked);
@@ -298,26 +331,28 @@ internal sealed class SettingsForm : Form
     {
         var s = Begin("Автозапуск");
         var autostart = s.Add(Check("Запускать Wallsets вместе с Windows"), gap: 4);
-        string[] texts =
+        (string State, string Tip)[] texts =
         [
-            "Включено: при входе в Windows Wallsets запускается в трее, без окна, и сразу включает обои. В диспетчере задач он виден на вкладке «Автозагрузка» под именем Wallsets.",
-            "Выключено. После включения Wallsets появится в диспетчере задач на вкладке «Автозагрузка».",
-            "Отключено в диспетчере задач. Поставьте галочку, чтобы включить снова.",
+            ("Включено", "При входе в Windows Wallsets запускается в трее, без окна, и сразу включает обои. В диспетчере задач он виден на вкладке «Автозагрузка» под именем Wallsets."),
+            ("Выключено", "После включения Wallsets появится в диспетчере задач на вкладке «Автозагрузка»."),
+            ("Отключено в диспетчере задач — поставьте галочку, чтобы включить снова", "Автозапуск Wallsets выключен в диспетчере задач на вкладке «Автозагрузка». Галочка включает его снова."),
         ];
-        var state = s.Hint(texts.MaxBy(t => t.Length)!, Indent, gap: 6);
+        // One short line with the state; the full explanation is in the tooltip of the option.
+        var state = s.Add(new Label { Font = Ui.Small, BackColor = Ui.Surface, AutoSize = false, UseMnemonic = false, Size = new Size(s.Width - Indent, TextRenderer.MeasureText("Ag", Ui.Small).Height + Ui.S(2)) }, Indent, gap: 6);
         var open = Ui.TextButton("Открыть автозагрузку в диспетчере задач", () =>
         {
             try { Desktop.OpenTaskManagerStartup(); } catch (Exception ex) { Program.Log(ex); }
         });
         s.Add(open, Indent, gap: 12);
         var frame = s.Add(Check("Сразу показывать обои при включении"), gap: 4);
-        s.Hint("При выключении компьютера последний кадр обоев ставится фоном Windows. После включения сразу видна та же картинка вместо фона Windows, а через несколько секунд она оживает. «Отключить и выйти» возвращает ваш прежний фон Windows.", Indent);
+        s.Hint("При выключении компьютера последний кадр обоев ставится фоном Windows. После включения сразу видна та же картинка вместо фона Windows, а через несколько секунд она оживает. «Отключить и выйти» возвращает ваш прежний фон Windows.");
         void Show()
         {
             var current = Desktop.StartState.Off;
             try { current = Desktop.Autostart; } catch (Exception ex) { Program.Log(ex); }
             updating = true; autostart.Checked = current == Desktop.StartState.On; updating = false;
-            state.Text = current switch { Desktop.StartState.On => texts[0], Desktop.StartState.DisabledInTaskManager => texts[2], _ => texts[1] };
+            var (text, tip) = current switch { Desktop.StartState.On => texts[0], Desktop.StartState.DisabledInTaskManager => texts[2], _ => texts[1] };
+            state.Text = text; tips.SetToolTip(autostart, Wrap(tip)); tips.SetToolTip(state, Wrap(tip));
             state.ForeColor = current == Desktop.StartState.DisabledInTaskManager ? Ui.Warning : Ui.Muted;
         }
         Show();
@@ -347,7 +382,8 @@ internal sealed class SettingsForm : Form
         var s = Begin("Добавить ярлык на рабочий стол");
         int gap = Ui.S(10), w = (s.Width - gap) / 2;
         var grid = new Panel { Size = new Size(s.Width, Ui.S(40) * 2 + gap), BackColor = Ui.Surface };
-        var result = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, Size = new Size(s.Width, Ui.S(20)), UseMnemonic = false, Text = "Ярлык появится на рабочем столе; повторное нажатие обновит его." };
+        var result = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, Size = new Size(s.Width, Ui.S(20)), UseMnemonic = false };
+        s.Heading("Ярлык появится на рабочем столе; повторное нажатие обновит его.");
         for (int i = 0; i < Desktop.Shortcuts.Length; i++)
         {
             var (id, name, _, _, description) = Desktop.Shortcuts[i];
@@ -392,7 +428,7 @@ internal sealed class SettingsForm : Form
         takenBox.Controls.Add(taken);
         s.Add(takenBox, gap: 14);
         var floating = s.Add(Check("Мини-пульт поверх окон"), gap: 4);
-        s.Hint("Маленькое окно с кнопками «предыдущие», «пауза» и «следующие», которое всегда видно.", Indent);
+        s.Hint("Маленькое окно с кнопками «предыдущие», «пауза» и «следующие», которое всегда видно.");
         floating.Checked = settings.Floating;
         floating.CheckedChanged += (_, _) => main.SetFloating(floating.Checked);
         End(s);

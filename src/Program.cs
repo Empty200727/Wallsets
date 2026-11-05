@@ -71,6 +71,7 @@ internal static class Program
         }
         Application.ThreadException += (_, e) => Log(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log(e.ExceptionObject as Exception ?? new Exception("Unhandled error"));
+        Application.AddMessageFilter(new WheelGuard());
         try { Application.Run(new MainForm(args.Contains("--tray"))); }
         catch (Exception ex) { Log(ex); MessageBox.Show(ex.Message, "Wallsets", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }

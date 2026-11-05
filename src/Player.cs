@@ -160,7 +160,8 @@ internal sealed class Player : IDisposable
     async Task Set(string name, string value)
     {
         if (applied.TryGetValue(name, out var old) && old == value) return;
-        await Command("set_property", name, value);
+        try { await Command("set_property", name, value); }
+        catch (InvalidOperationException ex) { throw new InvalidOperationException($"{ex.Message} ({name}={value})", ex); }
         applied[name] = value;
     }
     // Size of the loaded file's picture as decoded (before filters and the aspect override). A lighter copy

@@ -10,10 +10,13 @@ namespace Wallsets;
 internal sealed class MainForm : Form
 {
     readonly string setsRoot = Path.Combine(Program.Root, "Наборы");
+    // Own music for wallpapers, chosen in a tile's menu.
+    readonly string musicRoot = Path.Combine(Program.Root, "Набор музыки");
     readonly string settingsPath = Program.SettingsPath;
     readonly Settings settings;
     readonly Player player = new(Program.Root);
     readonly Optimizer optimizer;
+    readonly MusicPlayer music = new(Program.Root);
     // Plain check boxes: a set is chosen only by its tick, there is no separate highlighted row.
     readonly FlowLayoutPanel sets = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Margin = Padding.Empty, BackColor = Ui.Surface };
     readonly ThumbnailGrid files = new() { Dock = DockStyle.Fill, Margin = Padding.Empty };
@@ -72,6 +75,7 @@ internal sealed class MainForm : Form
     {
         this.startInTray = startInTray;
         Directory.CreateDirectory(setsRoot);
+        try { Directory.CreateDirectory(musicRoot); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         settings = Settings.Load(settingsPath);
         player.Volume = settings.MusicVolume; player.Scaling = settings.Scaling; player.Loop = !settings.ByVideoLength; player.Area = AreaRect; player.MaxFps = settings.MaxFps;
         optimizer = new(settings.Optimize, settings.MaxFps);
@@ -341,6 +345,7 @@ internal sealed class MainForm : Form
         Run(async () => { await Reapply(); optimizer.Clear(); });
     }
     internal string OptimizerStatus => optimizer.Status;
+    internal List<Optimizer.Item> OptimizerItems => optimizer.Items();
     internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
     internal void SetAnyWindowPause(bool on) { settings.PauseOnAnyWindow = on; Save(); CheckAutoPause(); }
     internal void SetFloating(bool on) { settings.Floating = on; UpdateFloating(); Save(); }
@@ -400,12 +405,31 @@ internal sealed class MainForm : Form
     SetOptions Options(string setId)
     {
         if (!settings.Sets.TryGetValue(setId, out var o)) settings.Sets[setId] = o = new();
-        o.Order ??= []; o.Counts ??= new(); o.Sound ??= [];
+        o.Order ??= []; o.Counts ??= new(); o.Sound ??= []; o.Differ ??= []; o.Music ??= new();
+        o.Fixed ??= [.. o.Sound];
         return o;
     }
     int CountOf(MediaFile file) => Options(file.SetId).Counts.TryGetValue(file.FileId, out var n) ? Math.Clamp(n, 1, MaxCopies) : 1;
-    // The sound switch in the player bar turns sound on for every wallpaper; a single wallpaper can have its own.
-    bool SoundFor(MediaFile? file) => settings.Music || file != null && Options(file.SetId).Sound.Contains(file.FileId);
+    // The sound switch in the player bar turns the sound of every wallpaper on or off; a wallpaper can be switched
+    // on its own until the next press, or fixed so that the switch leaves it alone (see SetOptions).
+    bool SoundFor(MediaFile? file) => file == null ? settings.Music : Library.SoundOf(Options(file.SetId), file.FileId, settings.Music);
+    bool Fixed(MediaFile file) => Options(file.SetId).Fixed!.Contains(file.FileId);
+    // The wallpaper's own music file, when it has one that still exists.
+    string? MusicFor(MediaFile? file) => file != null && Options(file.SetId).Music.TryGetValue(file.FileId, out var relative)
+        && Path.Combine(musicRoot, relative) is var path && File.Exists(path) ? path : null;
+    // With own music the video's own soundtrack is silent.
+    bool VideoSound(MediaFile? file) => SoundFor(file) && MusicFor(file) == null;
+    // Video sound and own music after a change of sound, music or wallpaper.
+    async Task ApplySound()
+    {
+        if (player.Running) await player.SetSound(VideoSound(current));
+        await music.Play(current != null && SoundFor(current) ? MusicFor(current) : null, userPaused || autoPaused, settings.MusicVolume);
+    }
+    async Task PauseAll(bool paused)
+    {
+        await player.Pause(paused);
+        await music.Pause(paused);
+    }
     static List<string> KeysOf(IEnumerable<ThumbnailItem> items) => items.Select(i => i.Key).ToList();
     void OpenFolder(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     void Save() { try { settings.Save(settingsPath); } catch (Exception ex) { problem = "Не удалось сохранить настройки: " + ex.Message; Program.Log(ex); } }
@@ -564,7 +588,7 @@ internal sealed class MainForm : Form
         RefreshFiles();
         // The optimizer works on every set, the current queue first.
         optimizer.Update(queue.Concat(library.SelectMany(s => s.Files)).Select(f => f.Path).Distinct().ToList());
-        if (queue.Count == 0) { current = null; player.Stop(); return; }
+        if (queue.Count == 0) { current = null; player.Stop(); music.Stop(); return; }
         if (current == null) await Play(ResumeIndex());
         else if (index < 0) await Play(0);
     }
@@ -676,11 +700,14 @@ internal sealed class MainForm : Form
         var number = new NumericUpDown { Minimum = 1, Maximum = MaxCopies, Value = CountOf(file), Width = Ui.S(64), TextAlign = HorizontalAlignment.Right, Anchor = AnchorStyles.Left, Margin = Padding.Empty };
         row.Controls.Add(label, 0, 0); row.Controls.Add(number, 1, 0);
         var count = new ToolStripControlHost(row) { AutoSize = true, Margin = Ui.P(0, 2, 0, 2) };
-        var sound = new ToolStripMenuItem("Проигрывать со звуком") { CheckOnClick = true, Checked = Options(file.SetId).Sound.Contains(file.FileId) };
-        if (settings.Music) sound.ToolTipText = "Сейчас звук включён для всех обоев кнопкой с динамиком; эта галочка действует, когда он выключен.";
+        var sound = new ToolStripMenuItem("Проигрывать со звуком") { CheckOnClick = true, Checked = SoundFor(file) };
+        sound.ToolTipText = Fixed(file) ? "Звук этих обоев закреплён: кнопка звука для всех обоев его не меняет."
+            : "Кнопка звука для всех обоев включает и выключает звук и здесь. Чтобы она не меняла звук этих обоев, закрепите его.";
         sound.CheckedChanged += (_, _) => SetFileSound(file, sound.Checked);
+        var fix = new ToolStripMenuItem("Закрепить звук этих обоев") { CheckOnClick = true, Checked = Fixed(file), ToolTipText = "Звук этих обоев (включён он или нет) остаётся как сейчас, что бы ни нажимали на кнопке звука для всех обоев." };
+        fix.CheckedChanged += (_, _) => SetFileFixed(file, fix.Checked);
         var show = new ToolStripMenuItem("Показать на рабочем столе", null, (_, _) => ShowSelected());
-        menu.Items.AddRange([title, new ToolStripSeparator(), count, sound, new ToolStripSeparator(), show]);
+        menu.Items.AddRange([title, new ToolStripSeparator(), count, sound, fix, MusicMenu(file), new ToolStripSeparator(), show]);
         // Enter and Esc would otherwise be taken by the menu itself, before the number field sees them.
         bool cancelled = false;
         foreach (Control part in number.Controls) part.PreviewKeyDown += (_, e) => { if (e.KeyCode is Keys.Enter or Keys.Escape) e.IsInputKey = true; };
@@ -697,6 +724,36 @@ internal sealed class MainForm : Form
             BeginInvoke(() => { menu.Dispose(); SetCount(file, index, value); });
         };
         menu.Show(location);
+    }
+    // "Своя музыка": the files of the folder "Набор музыки"; the chosen one is named in the item itself.
+    ToolStripMenuItem MusicMenu(MediaFile file)
+    {
+        var chosen = Options(file.SetId).Music.TryGetValue(file.FileId, out var relative) ? relative : null;
+        var item = new ToolStripMenuItem("Своя музыка: " + (chosen == null ? "нет" : Path.GetFileNameWithoutExtension(chosen)))
+        {
+            ToolTipText = "Вместо звука самого видео играет выбранный файл из папки «Набор музыки». Песня идёт своим ходом и не начинается заново, когда видео повторяется."
+        };
+        var none = new ToolStripMenuItem("Без своей музыки — звук самого видео", null, (_, _) => SetFileMusic(file, null)) { Checked = chosen == null };
+        item.DropDownItems.Add(none);
+        item.DropDownItems.Add(new ToolStripSeparator());
+        List<string> tracks = [];
+        try { tracks = Library.MusicFiles(musicRoot); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log(ex); }
+        foreach (var track in tracks)
+        {
+            var name = Path.GetFileNameWithoutExtension(track);
+            var dir = Path.GetDirectoryName(track);
+            item.DropDownItems.Add(new ToolStripMenuItem(string.IsNullOrEmpty(dir) ? name : dir + " / " + name, null, (_, _) => SetFileMusic(file, track))
+            {
+                Checked = string.Equals(track, chosen, StringComparison.OrdinalIgnoreCase)
+            });
+        }
+        if (item.DropDown is ToolStripDropDownMenu list) { list.ShowCheckMargin = true; list.ShowImageMargin = false; }
+        if (tracks.Count == 0) item.DropDownItems.Add(new ToolStripMenuItem("Папка «Набор музыки» пуста — положите туда музыку") { Enabled = false });
+        if (chosen != null && !tracks.Contains(chosen, StringComparer.OrdinalIgnoreCase))
+            item.DropDownItems.Add(new ToolStripMenuItem($"Файла «{Path.GetFileName(chosen)}» больше нет в папке") { Enabled = false });
+        item.DropDownItems.Add(new ToolStripSeparator());
+        item.DropDownItems.Add(new ToolStripMenuItem("Открыть папку «Набор музыки»", null, (_, _) => { Directory.CreateDirectory(musicRoot); OpenFolder(musicRoot); }));
+        return item;
     }
     // More copies go right after the tile that was clicked; fewer copies are taken from the end of the queue
     // (Arrange keeps the first copies of a file). The number is kept in the set's options.
@@ -731,11 +788,23 @@ internal sealed class MainForm : Form
     }
     void SetFileSound(MediaFile file, bool on)
     {
-        var list = Options(file.SetId).Sound;
-        list.Remove(file.FileId);
-        if (on) list.Add(file.FileId);
+        Library.SetSound(Options(file.SetId), file.FileId, on, settings.Music);
         Save(); UpdateSound();
-        Run(async () => { if (player.Running) await player.SetSound(SoundFor(current)); });
+        Run(ApplySound);
+    }
+    // A fixed wallpaper keeps the sound it has now when the button for all wallpapers is pressed.
+    void SetFileFixed(MediaFile file, bool on)
+    {
+        Library.SetFixed(Options(file.SetId), file.FileId, on, settings.Music);
+        Save();
+    }
+    // Choosing music also switches the wallpaper's sound on, or the music would not be heard.
+    void SetFileMusic(MediaFile file, string? relative)
+    {
+        var o = Options(file.SetId);
+        if (relative == null) o.Music.Remove(file.FileId); else o.Music[file.FileId] = relative;
+        if (relative != null && !SoundFor(file)) SetFileSound(file, true);
+        else { Save(); Run(ApplySound); }
     }
 
     // ---- playback ----
@@ -750,7 +819,7 @@ internal sealed class MainForm : Form
         Run(async () =>
         {
             bool automatic = ShouldAutoPause();
-            if (automatic != autoPaused && player.Running) { autoPaused = automatic; await player.Pause(userPaused || autoPaused); }
+            if (automatic != autoPaused && player.Running) { autoPaused = automatic; await PauseAll(userPaused || autoPaused); }
         });
     }
     async Task Play(int index)
@@ -759,9 +828,10 @@ internal sealed class MainForm : Form
         var path = file.Path;
         if (!File.Exists(path)) { ScheduleScan(); return; }
         autoPaused = ShouldAutoPause();
-        try { await player.Load(Source(path), userPaused || autoPaused, SoundFor(file)); }
-        catch { playbackFault = true; player.Stop(); throw; }
+        try { await player.Load(Source(path), userPaused || autoPaused, VideoSound(file)); }
+        catch { playbackFault = true; player.Stop(); music.Stop(); throw; }
         current = file; position = index; currentCopy = CopyAt(index); videoLeft = null;
+        try { await ApplySound(); } catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException) { Program.Log(ex); }
         ResetDeadline(); problem = null; playbackFault = false;
         nextHealth = Environment.TickCount64 + 5000;
         if (lastFrame == null) nextFrame = Environment.TickCount64 + 10000;
@@ -780,7 +850,7 @@ internal sealed class MainForm : Form
     {
         if (!player.Running || current == null) return;
         var source = Source(current.Path);
-        if (source != player.Loaded) await player.Load(source, userPaused || autoPaused, SoundFor(current));
+        if (source != player.Loaded) await player.Load(source, userPaused || autoPaused, VideoSound(current));
         else await player.ApplyScaling();
     }
     async Task Next()
@@ -793,12 +863,15 @@ internal sealed class MainForm : Form
         if (queue.Count == 0) return;
         await Play(Library.AdjacentIndex(current == null ? -1 : position, queue.Count, -1));
     }
-    void TogglePause() => Run(async () => { userPaused = !userPaused; if (player.Running) await player.Pause(userPaused || autoPaused); });
+    void TogglePause() => Run(async () => { userPaused = !userPaused; if (player.Running) await PauseAll(userPaused || autoPaused); });
     internal void SetSound(bool on)
     {
         if (settings.Music == on) return;
-        settings.Music = on; UpdateSound(); Save();
-        Run(async () => { if (player.Running) await player.SetSound(SoundFor(current)); });
+        // The button switches every wallpaper that is not fixed, also those switched on their own.
+        settings.Music = on;
+        foreach (var options in settings.Sets.Values) options.Differ?.Clear();
+        UpdateSound(); Save();
+        Run(ApplySound);
     }
     internal void SetByVideoLength(bool on)
     {
@@ -825,7 +898,7 @@ internal sealed class MainForm : Form
         volumeSending = true;
         try
         {
-            do { volumePending = false; if (player.Running) await player.SetVolume(settings.MusicVolume); }
+            do { volumePending = false; if (player.Running) await player.SetVolume(settings.MusicVolume); await music.SetVolume(settings.MusicVolume); }
             while (volumePending && !exiting);
         }
         catch (Exception ex) { Program.Log(ex); }
@@ -861,13 +934,13 @@ internal sealed class MainForm : Form
         if (!player.Running || !player.Attached)
         {
             playbackFault = true;
-            player.Stop();
+            player.Stop(); music.Stop();
             problem = "Подключение к рабочему столу потеряно. Нажмите «Следующие обои», чтобы повторить.";
             Program.Log(new IOException(problem));
             return;
         }
         bool automatic = ShouldAutoPause();
-        if (automatic != autoPaused) { autoPaused = automatic; await player.Pause(userPaused || autoPaused); }
+        if (automatic != autoPaused) { autoPaused = automatic; await PauseAll(userPaused || autoPaused); }
         if (ChangesAtEnd)
         {
             // Without looping mpv stops on the last frame of the video: then the next wallpaper comes.
@@ -1036,6 +1109,6 @@ internal sealed class MainForm : Form
         if (windowHook != IntPtr.Zero) { Native.UnhookWinEvent(windowHook); windowHook = IntPtr.Zero; }
         if (IsHandleCreated) SuspendHotkeys();
         if (powerNotification != IntPtr.Zero) { Native.UnregisterPowerSettingNotification(powerNotification); powerNotification = IntPtr.Zero; }
-        floating?.Close(); player.Dispose(); optimizer.Dispose(); tray.Visible = false; tray.Dispose();
+        floating?.Close(); player.Dispose(); music.Dispose(); optimizer.Dispose(); tray.Visible = false; tray.Dispose();
     }
 }

@@ -138,3 +138,36 @@ controls (SMTC), audio device monitoring and the built-in scripts; under Wine SM
   waits 10 s: mpv stopped, the half file dropped and logged, the next files go on;
 - the summary counts only copies that exist.
 PASS Built-in self-tests under Wine 9.0 (29 checks).
+
+Update 2026-11-05: encoders, optimizer window, wheel, hints, wallpaper sound and own music
+From the user's errors.log: copies were made with "h264_mf" and stalled at "-1%". The bundled FFmpeg's
+NVENC needs NVIDIA driver 610.00 or newer ("The minimum required Nvidia driver for nvenc is %s or newer",
+610.00 in mpv.exe), so with an older driver every NVENC test failed and the software Media Foundation
+encoder was used; "-1%" means mpv never answered over IPC while it worked.
+- Encoders now: NVENC, AMF, Quick Sync, Media Foundation on the graphics card (hw_encoding=1, the
+  driver's own encoder, not FFmpeg's NVENC API), Media Foundation on the processor. A failed test writes
+  the encoder's own errors to errors.log (decoder noise left out); the NVIDIA driver version NVENC asks
+  for is shown in the settings. A growing file counts as progress. Copies that failed with another
+  encoder (or with the old build, which did not record it) are tried again once a different one is found.
+- The "unsupported format for accessing property" of 2026-10-28 came from the build before the port;
+  every property ApplyScaling sets is accepted by the bundled mpv 0.41 (Lua test under Wine) and by
+  mpv 0.37 over IPC. A failing property is now named in the message.
+PASS Built-in self-tests under Wine 9.0 (31 checks; new: wallpaper sound rules, NVIDIA driver version
+     from mpv's log).
+PASS Under Wine with a test build that lists the software mpeg4 encoder last: the five real encoders
+     fail and errors.log gets one line each with the reason (nvcuda.dll missing, no AMF device, no
+     mfx implementation, no MFT); mpeg4 is chosen; a file marked failed by the old build is encoded again.
+PASS "Показать облегчённые и необлегчённые видео": window with "До 30 кадров в секунду", two columns of
+     small numbered tiles; while encoding, the current one has an orange frame and its percentage, and
+     finished ones move to the left column.
+PASS Mouse wheel under Wine: over the unfocused volume slider, interval field and "Превью" list in the
+     main window nothing changes; after a click on the slider the wheel moves it; over the area fields
+     in the settings the page scrolls and the values stay.
+PASS Settings: grey paragraphs are gone; an option's or a heading's explanation appears about one
+     second after the pointer stops on it (not after 0.5 s, yes after 1.7 s).
+PASS Own music player under Wine (test program around Music.cs, with --ao=null since Wine has no sound
+     card): paused before the file is opened, same track is not restarted, volume follows, no video,
+     loop-file=inf, stopping ends the process. The bundled mpv accepts all its options.
+NOT CHECKED under Wine: the tile menu. A right click crashes inside WinForms' menu filter
+("Failed to get thread's DpiAwareness context") in Wine; the build before these changes crashes the same
+way, so it is Wine's, not Windows'. Real sound output, NVENC/MF on real hardware.

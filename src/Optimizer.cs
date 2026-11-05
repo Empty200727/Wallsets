@@ -23,20 +23,29 @@ internal sealed class Optimizer : IDisposable
         // Turned or HDR video: a plain H.264 copy would show it wrong, so the original plays.
         public bool Keep { get; set; }
         public bool Failed { get; set; }
+        // The encoder that could not make the copy; another encoder tries again.
+        public string? FailedWith { get; set; }
     }
+    // A video as the optimizer sees it, for the window that lists them.
+    public enum State { Unknown, Light, Kept, Waiting, Working, Ready, Failed }
+    public readonly record struct Item(string Path, State State, int Percent);
     public readonly record struct Plan(int Width, int Height, int Step);
     static readonly HashSet<string> Videos = new(".mp4 .mkv .webm .mov .avi .m4v .wmv .mpg .mpeg .ts".Split(' '), StringComparer.OrdinalIgnoreCase);
-    // Graphics card encoders first (NVIDIA, AMD, Intel); Media Foundation has a software one on every
-    // Windows 10/11. Options a driver does not know are skipped by mpv with a warning.
-    static readonly (string Codec, string Options)[] Encoders =
+    // Graphics card encoders first (NVIDIA, AMD, Intel). Media Foundation is the Windows way to the same hardware
+    // (through the graphics driver, so it also works where FFmpeg's NVENC needs a newer driver), and last its
+    // software encoder, which works everywhere but on the processor. Options a driver does not know are skipped.
+    static readonly (string Name, string Codec, string Options)[] Encoders =
     [
-        ("h264_nvenc", "preset=p5,tune=hq,rc=vbr,cq=21,b=0,spatial-aq=1"),
-        ("h264_amf", "quality=quality,rc=cqp,qp_i=20,qp_p=22,qp_b=24"),
-        ("h264_qsv", "preset=slower,global_quality=21"),
-        ("h264_mf", "rate_control=quality,quality=80"),
+        ("NVIDIA NVENC", "h264_nvenc", "preset=p5,tune=hq,rc=vbr,cq=21,b=0,spatial-aq=1"),
+        ("AMD AMF", "h264_amf", "quality=quality,rc=cqp,qp_i=20,qp_p=22,qp_b=24"),
+        ("Intel Quick Sync", "h264_qsv", "preset=slower,global_quality=21"),
+        ("Windows (видеокарта)", "h264_mf", "hw_encoding=1,rate_control=quality,quality=80"),
+        ("Windows (процессор)", "h264_mf", "hw_encoding=0,rate_control=quality,quality=80"),
     ];
     // Only these files are ever deleted, even when the folder falls back to the shared temporary folder.
-    static readonly Regex Own = new(@"^[0-9A-F]{32}(\.test)?\.mp4(\.part)?$");
+    static readonly Regex Own = new(@"^[0-9A-F]{32}(\.test)?\.mp4(\.part|\.log)?$");
+    static readonly Regex Noise = new(@"\]\[vd\]|AVHW|hwaccel|no frame!");
+    static readonly Regex DriverNeeded = new(@"minimum required Nvidia driver for nvenc is ([0-9.]+)");
     const string Off = "Выключено: все видео играют как есть.";
     const long MinimumFree = 2L << 30;
     readonly string folder, indexPath;
@@ -49,6 +58,11 @@ internal sealed class Optimizer : IDisposable
     CancellationTokenSource? pass;
     List<string> files = [];
     int encoder = -1, misses, requests;
+    // The NVIDIA driver FFmpeg's NVENC asked for, when the installed one is older.
+    string? driver;
+    // The video being encoded and how far it is.
+    string? working;
+    int percent;
     volatile bool enabled;
     volatile int maxFps;
     public string Status { get; private set; }
@@ -68,6 +82,8 @@ internal sealed class Optimizer : IDisposable
         indexPath = Path.Combine(folder, "wallsets-optimized.json");
         try { index = JsonSerializer.Deserialize<Dictionary<string, Probe>>(File.ReadAllText(indexPath)) ?? []; }
         catch { index = []; }
+        // Copies that failed before the encoder was remembered get one more try.
+        foreach (var probe in index.Values.Where(p => p.Failed && p.FailedWith == null && p.Width > 0)) probe.FailedWith = "?";
         Status = enabled ? "Ждёт списка обоев…" : Off;
         _ = Task.Run(Work);
     }
@@ -85,13 +101,13 @@ internal sealed class Optimizer : IDisposable
         return CopyFor(path, out _) is { } copy && File.Exists(copy) ? copy : path;
     }
     // Where the copy of a file goes; null when the file needs none or is not checked yet.
-    string? CopyFor(string path, out Plan plan)
+    string? CopyFor(string path, out Plan plan, bool evenFailed = false)
     {
         plan = default;
         if (SourceKey(path) is not { } key) return null;
         Probe? probe;
         lock (sync) index.TryGetValue(key, out probe);
-        if (probe == null || probe.Keep || probe.Failed) return null;
+        if (probe == null || probe.Keep || probe.Failed && !evenFailed) return null;
         if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, maxFps) is not { } p) return null;
         plan = p;
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{key}|{p.Width}x{p.Height}|{p.Step}"));
@@ -151,6 +167,21 @@ internal sealed class Optimizer : IDisposable
             var probe = await Read(videos[i], token);
             lock (sync) { index[key] = probe; SaveIndex(); }
         }
+        // Copies that another encoder could not make get one more try once this session's encoder is known.
+        if (encoder < 0 && videos.FirstOrDefault(v => Retry(v) && CopyFor(v, out _, true) is { } c && !File.Exists(c)) is { } sample)
+        {
+            CopyFor(sample, out var plan, true);
+            Say("Подбор кодировщика видеокарты…");
+            // When nothing works, the next passes of this session do not try again and again.
+            if (!await Detect(sample, plan, token) && ++misses >= 2) encoder = Encoders.Length;
+        }
+        if (encoder >= 0 && encoder < Encoders.Length)
+            lock (sync)
+            {
+                bool changed = false;
+                foreach (var probe in index.Values.Where(p => p.Failed && p.FailedWith != null && p.FailedWith != Encoders[encoder].Name)) { probe.Failed = false; probe.FailedWith = null; changed = true; }
+                if (changed) SaveIndex();
+            }
         var work = new List<(string Path, string Copy, Plan Plan)>();
         var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var video in videos)
@@ -169,20 +200,22 @@ internal sealed class Optimizer : IDisposable
             if (encoder < 0)
             {
                 Say($"Облегчение видео {number}: подбор кодировщика видеокарты…");
-                var test = Path.Combine(folder, Convert.ToHexString(RandomNumberGenerator.GetBytes(16)) + ".test.mp4");
-                for (int codec = 0; codec < Encoders.Length && encoder < 0; codec++)
-                    if (await Encode(path, test, plan, codec, true, null, token)) encoder = codec;
-                if (encoder < 0)
+                if (!await Detect(path, plan, token))
                 {
                     // Either no encoder works or this file cannot be read: two files in a row decide.
-                    Fail(path, "Нет рабочего кодировщика H.264 для файла ");
+                    Fail(path, "Нет рабочего кодировщика H.264 для файла ", null);
                     if (++misses < 2) continue;
                     encoder = Encoders.Length;
                 }
             }
-            if (encoder >= Encoders.Length) { Say("Не удалось облегчить видео: видеокарта и Windows не дали кодировщик H.264. Видео играют как есть."); return; }
-            if (await Encode(path, copy, plan, encoder, false, percent => Say($"Облегчение видео {number}: «{name}» — {percent}%"), token)) Ready?.Invoke(path);
-            else Fail(path, $"Кодировщик {Encoders[encoder].Codec} не смог облегчить файл ");
+            if (encoder >= Encoders.Length) { Say("Не удалось облегчить видео: видеокарта и Windows не дали кодировщик H.264. Видео играют как есть." + DriverHint); return; }
+            working = path; percent = 0;
+            try
+            {
+                if (await Encode(path, copy, plan, encoder, false, value => { percent = value; Say($"Облегчение видео {number}: «{name}» — {value}%" + Using); }, token)) Ready?.Invoke(path);
+                else Fail(path, $"Кодировщик {Encoders[encoder].Name} не смог облегчить файл ", Encoders[encoder].Name);
+            }
+            finally { working = null; }
         }
         // Copies of removed or changed files and of an old screen size or limit; one that still plays goes next time.
         foreach (var file in OwnFiles())
@@ -195,12 +228,45 @@ internal sealed class Optimizer : IDisposable
             ? "Тяжёлых видео нет: все не больше экрана" + (maxFps > 0 ? $" и не чаще {maxFps} кадров/с." : ".")
             : $"Готово: облегчено {keep.Count(File.Exists)} видео, копии занимают " + (size >= 1L << 30 ? (size / (double)(1L << 30)).ToString("0.0", ru) + " ГБ." : (size >> 20) + " МБ.");
         if (failed > 0) text += $" Не удалось облегчить: {failed} (они играют как есть, подробности в errors.log).";
-        Say(text);
+        Say(text + (keep.Count > 0 ? Using : "") + DriverHint);
     }
-    void Fail(string path, string reason)
+    string Using => encoder >= 0 && encoder < Encoders.Length ? $" Кодировщик: {Encoders[encoder].Name}." : "";
+    string DriverHint => driver != null && (encoder < 0 || Encoders[Math.Min(encoder, Encoders.Length - 1)].Codec != "h264_nvenc")
+        ? $" NVENC видеокарты NVIDIA не запустился: ему нужен драйвер NVIDIA {driver} или новее — обновите драйвер, и копии будут делаться быстрее." : "";
+    // Tries the encoders in order on one second of the video and keeps the first that makes a finished MP4.
+    async Task<bool> Detect(string path, Plan plan, CancellationToken token)
+    {
+        var test = Path.Combine(folder, Convert.ToHexString(RandomNumberGenerator.GetBytes(16)) + ".test.mp4");
+        for (int codec = 0; codec < Encoders.Length; codec++)
+            if (await Encode(path, test, plan, codec, true, null, token)) { encoder = codec; return true; }
+        return false;
+    }
+    // A file that failed with an encoder other than the one found now.
+    bool Retry(string path)
+    {
+        lock (sync) return SourceKey(path) is { } key && index.TryGetValue(key, out var probe) && probe.Failed && probe.FailedWith != null;
+    }
+    void Fail(string path, string reason, string? encoderName)
     {
         Program.Log(new IOException(reason + path));
-        lock (sync) { if (SourceKey(path) is { } key && index.TryGetValue(key, out var probe)) probe.Failed = true; SaveIndex(); }
+        lock (sync) { if (SourceKey(path) is { } key && index.TryGetValue(key, out var probe)) { probe.Failed = true; probe.FailedWith = encoderName; } SaveIndex(); }
+    }
+    // Every video of the wallpaper list and what happens to it, in the list's order.
+    public List<Item> Items()
+    {
+        List<string> list;
+        lock (sync) list = files;
+        var result = new List<Item>();
+        foreach (var path in list.Where(f => Videos.Contains(Path.GetExtension(f))).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            Probe? probe = null;
+            if (SourceKey(path) is { } key) lock (sync) index.TryGetValue(key, out probe);
+            var state = probe == null ? State.Unknown : probe.Failed ? State.Failed : probe.Keep ? State.Kept
+                : CopyFor(path, out _) is not { } copy ? State.Light : File.Exists(copy) ? State.Ready
+                : string.Equals(path, working, StringComparison.OrdinalIgnoreCase) ? State.Working : State.Waiting;
+            result.Add(new Item(path, state, state == State.Working ? percent : 0));
+        }
+        return result;
     }
 
     // Size, frame rate, turn and colour curve from a paused helper player without picture or sound.
@@ -243,7 +309,9 @@ internal sealed class Optimizer : IDisposable
         var pipe = $"wallsets-encode-{Environment.ProcessId}-{Interlocked.Increment(ref requests)}";
         var graph = (plan.Step > 1 ? $"framestep={plan.Step}," : "") + $"scale={plan.Width}:{plan.Height}:flags=bicubic";
         var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options, "--oac=aac", "--oacopts=b=192k", "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
-        if (test) args.Add("--length=1");
+        // A test keeps mpv's log: the reason an encoder does not work goes to errors.log.
+        var log = output + ".log";
+        if (test) { args.Add("--length=1"); args.Add("--log-file=" + log); }
         args.Add("--"); args.Add(path);
         var process = Start([.. args]);
         try
@@ -252,7 +320,7 @@ internal sealed class Optimizer : IDisposable
             // mpv can stay open after the last frame or stop moving: after two minutes without progress it is
             // stopped, and the copy counts if the MP4 was finished.
             double last = -1;
-            long moved = Environment.TickCount64;
+            long moved = Environment.TickCount64, written = 0;
             bool stalled = false;
             while (!process.HasExited)
             {
@@ -266,6 +334,9 @@ internal sealed class Optimizer : IDisposable
                     progress?.Invoke((int)percent);
                 }
                 catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException && !token.IsCancellationRequested) { }
+                // A busy encoder can keep mpv from answering: a growing file is progress too.
+                long size = File.Exists(part) ? new FileInfo(part).Length : 0;
+                if (size != written) { written = size; moved = Environment.TickCount64; }
                 if (Environment.TickCount64 - moved > 120_000)
                 {
                     stalled = true;
@@ -274,15 +345,36 @@ internal sealed class Optimizer : IDisposable
                     break;
                 }
             }
-            if (!(stalled || process.ExitCode == 0) || !Complete(part)) return false;
+            if (!(stalled || process.ExitCode == 0) || !Complete(part))
+            {
+                if (test) Explain(codec, log);
+                return false;
+            }
             if (!test) File.Move(part, output, true);
             return true;
         }
         finally
         {
             Kill(process); process.Dispose();
-            try { File.Delete(part); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            foreach (var file in new[] { part, log })
+                try { File.Delete(file); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
+    }
+    // "The minimum required Nvidia driver for nvenc is 610.00 or newer" -> "610.00".
+    internal static string? DriverFrom(string line) => DriverNeeded.Match(line) is { Success: true } m ? m.Groups[1].Value : null;
+    // Errors from mpv's log of a failed test, and the NVIDIA driver version NVENC asks for.
+    void Explain(int codec, string log)
+    {
+        try
+        {
+            // Messages of the video decoder (its hardware part falls back to the processor on its own) are left out.
+            var all = File.Exists(log) ? File.ReadLines(log).Where(l => (l.Contains("][e][") || l.Contains("][f][")) && !Noise.IsMatch(l))
+                .Select(l => l[(l.IndexOf("][", l.IndexOf(']')) + 1)..].Trim()).Distinct().ToList() : [];
+            foreach (var line in all) if (DriverFrom(line) is { } version) driver = version;
+            var lines = all.TakeLast(5).ToList();
+            Program.Log(new IOException($"Кодировщик {Encoders[codec].Name} не подошёл" + (lines.Count > 0 ? ": " + string.Join(" | ", lines) : ".")));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
     // A finished MP4: its top-level boxes fill the file exactly and include the index (moov) and the data
     // (mdat). The muxer writes the index last, so a file cut off while it was written has none.

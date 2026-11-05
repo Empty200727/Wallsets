@@ -60,6 +60,8 @@ public sealed class Settings
     public static readonly int[] FpsLimits = [0, 60, 30, 15];
     // Heavy videos get a lighter copy fitted to the screen and the frame-rate limit (see Optimizer).
     public bool Optimize { get; set; } = true;
+    // Tile size in the window of lightened videos: small, medium or large.
+    public int OptimizerThumbnails { get; set; }
     // Videos change when they have played to the end; pictures still use IntervalSeconds.
     public bool ByVideoLength { get; set; }
     public bool Floating { get; set; }
@@ -115,6 +117,7 @@ public sealed class Settings
             s.MusicVolume = Math.Clamp(s.MusicVolume, 0, 100);
             if (!ScalingModes.Contains(s.Scaling)) s.Scaling = "fill";
             if (!FpsLimits.Contains(s.MaxFps)) s.MaxFps = 30;
+            s.OptimizerThumbnails = Math.Clamp(s.OptimizerThumbnails, 0, 2);
             s.Hotkeys ??= new();
             if (s.Area is { Valid: false }) s.Area = null;
             if (s.LastArea is { Valid: false }) s.LastArea = null;

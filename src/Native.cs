@@ -30,6 +30,8 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool ScreenToClient(IntPtr hwnd, ref POINT point);
     [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] internal static extern IntPtr WindowFromPoint(POINT point);
+    // GDI (0) and USER (1) objects of a process: a number that only grows means a leak.
+    [DllImport("user32.dll")] internal static extern uint GetGuiResources(IntPtr process, uint flags);
     [DllImport("user32.dll")] internal static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetClassName(IntPtr hwnd, StringBuilder cls, int count);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);

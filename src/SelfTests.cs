@@ -75,6 +75,16 @@ internal static class SelfTests
             bool cut = Optimizer.Complete(mp4);
             File.Delete(mp4);
             Check(whole && !noIndex && !cut, "A lighter copy counts only as a finished MP4: not without its index, not cut off");
+            var first = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + "-a.mp4");
+            var renamed = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + "-b.mp4");
+            File.WriteAllBytes(first, Enumerable.Range(0, 200_000).Select(i => (byte)(i * 7)).ToArray());
+            var before = Fingerprints.Compute(first, new FileInfo(first).Length);
+            File.Move(first, renamed, true);
+            bool sameAfterRename = Fingerprints.Compute(renamed, new FileInfo(renamed).Length) == before;
+            File.WriteAllBytes(renamed, Enumerable.Range(0, 200_000).Select(i => (byte)(i * 7 + 1)).ToArray());
+            bool otherContents = Fingerprints.Compute(renamed, new FileInfo(renamed).Length) != before;
+            File.Delete(renamed);
+            Check(sameAfterRename && otherContents, "A video is known by its contents: a renamed file keeps its key, other contents get another");
             Check(Optimizer.DriverFrom("[e][ffmpeg] h264_nvenc: The minimum required Nvidia driver for nvenc is 610.00 or newer") == "610.00" && Optimizer.DriverFrom("[e][ffmpeg] h264_nvenc: Cannot load nvcuda.dll") == null,
                 "The NVIDIA driver version NVENC asks for is read from mpv's log");
             var square = new Rectangle(0, 0, 1000, 1000);

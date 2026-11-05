@@ -828,7 +828,8 @@ internal sealed class MainForm : Form
         var path = file.Path;
         if (!File.Exists(path)) { ScheduleScan(); return; }
         autoPaused = ShouldAutoPause();
-        try { await player.Load(Source(path), userPaused || autoPaused, VideoSound(file)); }
+        var source = Source(path);
+        try { await player.Load(source, userPaused || autoPaused, VideoSound(file), source == path ? null : path); }
         catch { playbackFault = true; player.Stop(); music.Stop(); throw; }
         current = file; position = index; currentCopy = CopyAt(index); videoLeft = null;
         try { await ApplySound(); } catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException) { Program.Log(ex); }
@@ -850,7 +851,7 @@ internal sealed class MainForm : Form
     {
         if (!player.Running || current == null) return;
         var source = Source(current.Path);
-        if (source != player.Loaded) await player.Load(source, userPaused || autoPaused, VideoSound(current));
+        if (source != player.Loaded) await player.Load(source, userPaused || autoPaused, VideoSound(current), source == current.Path ? null : current.Path);
         else await player.ApplyScaling();
     }
     async Task Next()
@@ -1058,7 +1059,7 @@ internal sealed class MainForm : Form
         if (m.Msg == 0x16 && m.WParam != IntPtr.Zero) SessionEnding();
         base.WndProc(ref m);
     }
-    object Snapshot() => new { running = !exiting, currentFile = current?.Path, position, count = queue.Count, queue = queue.Select(f => f.Path), selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, byVideoLength = settings.ByVideoLength, remainingSeconds = Math.Max(0, RemainingSeconds), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, scaling = settings.Scaling, maxFps = settings.MaxFps, playing = player.Loaded, optimize = settings.Optimize, optimizer = optimizer.Status, pauseOnAnyWindow = settings.PauseOnAnyWindow, showNames = settings.ShowNames, showSetNames = settings.ShowSetNames, hotkeys = hotkeyState, visible = Visible, problem = problem ?? hotkeyProblem };
+    object Snapshot() => new { running = !exiting, currentFile = current?.Path, position, count = queue.Count, queue = queue.Select(f => f.Path), selected = settings.Selected, paused = userPaused, autoPaused, intervalSeconds = settings.IntervalSeconds, byVideoLength = settings.ByVideoLength, remainingSeconds = Math.Max(0, RemainingSeconds), playerPid = player.Pid, playerPipe = player.PipeName, attached = player.Attached, starts = player.Starts, renderer = player.WindowInfo, playbackFault, columns = files.Columns, thumbnailSize = settings.ThumbnailSize, singleSet = settings.SingleSet, music = settings.Music, musicVolume = settings.MusicVolume, scaling = settings.Scaling, maxFps = settings.MaxFps, playing = player.Loaded, optimize = settings.Optimize, optimizer = optimizer.Status, pauseOnAnyWindow = settings.PauseOnAnyWindow, managedMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1), gdiObjects = Native.GetGuiResources(new IntPtr(-1), 0), userObjects = Native.GetGuiResources(new IntPtr(-1), 1), showNames = settings.ShowNames, showSetNames = settings.ShowSetNames, hotkeys = hotkeyState, visible = Visible, problem = problem ?? hotkeyProblem };
     async Task Server()
     {
         while (!cancellation.IsCancellationRequested)

@@ -34,6 +34,7 @@ internal sealed class Player : IDisposable
     public Rectangle? Area { get; set; }
     // Last values sent to mpv, so unchanged options are not sent (and the video is not refiltered) again.
     readonly Dictionary<string, string> applied = [];
+    string? audioFiles;
     public Player(string root) { this.root = root; }
 
     public async Task Start()
@@ -45,7 +46,7 @@ internal sealed class Player : IDisposable
         var start = new ProcessStartInfo(Path.Combine(root, "engine", "mpv.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root };
         string[] args = ["--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--loop-file=" + LoopValue, "--aid=" + SoundValue, "--volume=" + Volume, "--volume-max=100", "--audio-client-name=Wallsets", "--hwdec=auto", "--vo=gpu", "--gpu-api=d3d11", "--gpu-context=d3d11", "--profile=fast", "--interpolation=no", "--video-sync=audio", "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=no", "--input-cursor=no", "--cursor-autohide=no", "--stop-screensaver=no", "--image-display-duration=inf", "--keepaspect=" + (Scaling == "stretch" ? "no" : "yes"), "--panscan=" + (Scaling == "fill" ? "1" : "0"), "--terminal=no", "--msg-level=all=warn", "--wid=0", "--input-ipc-server=" + PipeName];
         foreach (var arg in args) start.ArgumentList.Add(arg);
-        applied.Clear();
+        applied.Clear(); audioFiles = null;
         applied["keepaspect"] = Scaling == "stretch" ? "no" : "yes"; applied["panscan"] = Scaling == "fill" ? "1" : "0";
         applied["aid"] = SoundValue; applied["loop-file"] = LoopValue;
         applied["video-unscaled"] = "no"; applied["video-align-x"] = applied["video-align-y"] = "0"; applied["vf"] = "";
@@ -104,10 +105,17 @@ internal sealed class Player : IDisposable
 
     string SoundValue => Sound ? "auto" : "no";
     string LoopValue => Loop ? "inf" : "no";
-    public async Task Load(string path, bool paused, bool sound)
+    // soundFrom: the original of a lighter copy, which has no sound of its own; its soundtrack plays as an
+    // extra track, chosen by aid=auto like the file's own one.
+    public async Task Load(string path, bool paused, bool sound, string? soundFrom = null)
     {
         Sound = sound;
         await Start();
+        if (soundFrom != audioFiles)
+        {
+            await Command("set_property", "audio-files", soundFrom == null ? Array.Empty<string>() : new[] { soundFrom });
+            audioFiles = soundFrom;
+        }
         await Command("set_property", "pause", paused);
         await Set("aid", SoundValue);
         await Set("loop-file", LoopValue);

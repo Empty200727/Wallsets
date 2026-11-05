@@ -9,6 +9,7 @@ internal sealed class OptimizerForm : Form
     readonly Label status = new() { Dock = DockStyle.Fill, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Window, TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false, AutoEllipsis = true };
     readonly Label doneTitle = Title(), todoTitle = Title();
     readonly ThumbnailGrid done = Grid("Облегчённых копий пока нет"), todo = Grid("Всё облегчено");
+    readonly ComboBox size = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.S(140), Anchor = AnchorStyles.Right };
     readonly Label note = new() { Dock = DockStyle.Fill, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Window, UseMnemonic = false };
 
     public OptimizerForm(MainForm main)
@@ -31,7 +32,18 @@ internal sealed class OptimizerForm : Form
         layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(36))); layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(26)));
         layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(32))); layout.RowStyles.Add(new(SizeType.Percent, 100));
         layout.RowStyles.Add(new(SizeType.Absolute, Ui.S(44)));
-        layout.Controls.Add(heading, 0, 0); layout.SetColumnSpan(heading, 2);
+        layout.Controls.Add(heading, 0, 0);
+        // Tile size, like "Превью" in the main window (Ctrl + wheel over the tiles works too).
+        var sizeRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, BackColor = Ui.Window, Margin = Padding.Empty };
+        var sizeLabel = Ui.Caption("Превью", Ui.Body, Ui.Muted); sizeLabel.BackColor = Ui.Window; sizeLabel.Anchor = AnchorStyles.Left; sizeLabel.Margin = Ui.P(0, 6, 8, 0);
+        size.Items.AddRange(["Мелкие", "Средние", "Крупные"]);
+        size.SelectedIndex = Math.Clamp(main.Settings.OptimizerThumbnails, 0, 2);
+        sizeRow.Controls.AddRange([sizeLabel, size]);
+        layout.Controls.Add(sizeRow, 1, 0);
+        done.SizeIndex = todo.SizeIndex = size.SelectedIndex;
+        size.SelectedIndexChanged += (_, _) => SetSize(size.SelectedIndex);
+        done.SizeIndexChanged += (_, _) => SetSize(done.SizeIndex);
+        todo.SizeIndexChanged += (_, _) => SetSize(todo.SizeIndex);
         layout.Controls.Add(status, 0, 1); layout.SetColumnSpan(status, 2);
         layout.Controls.Add(doneTitle, 0, 2); layout.Controls.Add(todoTitle, 1, 2);
         layout.Controls.Add(Framed(done, Ui.P(0, 0, 6, 0)), 0, 3); layout.Controls.Add(Framed(todo, Ui.P(6, 0, 0, 0)), 1, 3);
@@ -52,6 +64,16 @@ internal sealed class OptimizerForm : Form
         return card;
     }
     void Changed(object? sender, EventArgs e) { if (!IsDisposed) Fill(); }
+    // The grids know four sizes; this window offers the first three.
+    void SetSize(int index)
+    {
+        index = Math.Clamp(index, 0, 2);
+        if (done.SizeIndex != index) done.SizeIndex = index;
+        if (todo.SizeIndex != index) todo.SizeIndex = index;
+        if (size.SelectedIndex != index) size.SelectedIndex = index;
+        if (main.Settings.OptimizerThumbnails == index) return;
+        main.Settings.OptimizerThumbnails = index; main.SaveSettings();
+    }
 
     void Fill()
     {

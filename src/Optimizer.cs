@@ -23,7 +23,7 @@ internal sealed class Optimizer : IDisposable
         // Turned or HDR video: a plain H.264 copy would show it wrong, so the original plays.
         public bool Keep { get; set; }
         public bool Failed { get; set; }
-        // The encoder that could not make the copy; another encoder tries again.
+        // The encoder (and Revision) that could not make the copy; another encoder tries again.
         public string? FailedWith { get; set; }
     }
     // A video as the optimizer sees it, for the window that lists them.
@@ -48,6 +48,11 @@ internal sealed class Optimizer : IDisposable
     static readonly Regex DriverNeeded = new(@"minimum required Nvidia driver for nvenc is ([0-9.]+)");
     const string Off = "Выключено: все видео играют как есть.";
     const long MinimumFree = 2L << 30;
+    // Changes of the way copies are made: failures of an older way are tried again. 2: copies without sound.
+    const string Revision = "#2";
+    // A copy whose video is gone is deleted only after this time, so cutting a video and pasting it into
+    // another set (or renaming it) does not lose its copy.
+    static readonly TimeSpan OrphanGrace = TimeSpan.FromMinutes(10);
     readonly string folder, indexPath;
     readonly string engine = Path.Combine(Program.Root, "engine", "mpv.exe");
     readonly Dictionary<string, Probe> index;
@@ -63,6 +68,9 @@ internal sealed class Optimizer : IDisposable
     // The video being encoded and how far it is.
     string? working;
     int percent;
+    // Copies without a video since this time (Environment.TickCount64); used by the worker only.
+    readonly Dictionary<string, long> orphans = new(StringComparer.OrdinalIgnoreCase);
+    bool cleanupPlanned;
     volatile bool enabled;
     volatile int maxFps;
     public string Status { get; private set; }
@@ -100,23 +108,54 @@ internal sealed class Optimizer : IDisposable
         if (!enabled) return path;
         return CopyFor(path, out _) is { } copy && File.Exists(copy) ? copy : path;
     }
-    // Where the copy of a file goes; null when the file needs none or is not checked yet.
-    string? CopyFor(string path, out Plan plan, bool evenFailed = false)
+    // Where the copy of a file goes for the frame-rate limit (the current one by default); null when the file
+    // needs none or is not checked yet.
+    string? CopyFor(string path, out Plan plan, bool evenFailed = false, int? limit = null)
     {
         plan = default;
         if (SourceKey(path) is not { } key) return null;
         Probe? probe;
         lock (sync) index.TryGetValue(key, out probe);
         if (probe == null || probe.Keep || probe.Failed && !evenFailed) return null;
-        if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, maxFps) is not { } p) return null;
+        if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, limit ?? maxFps) is not { } p) return null;
         plan = p;
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{key}|{p.Width}x{p.Height}|{p.Step}"));
-        return Path.Combine(folder, Convert.ToHexString(hash)[..32] + ".mp4");
+        return CopyName(key, p);
     }
+    string CopyName(string key, Plan plan) =>
+        Path.Combine(folder, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{key}|{plan.Width}x{plan.Height}|{plan.Step}")))[..32] + ".mp4");
+    // A video is known by its contents (Fingerprints: its size and its first and last 64 KB), so a renamed file
+    // or one moved to another set keeps its copy. When the file cannot be read, its path stands in.
     static string? SourceKey(string path)
     {
         var file = new FileInfo(path);
-        return file.Exists ? $"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}" : null;
+        if (!file.Exists) return null;
+        return Fingerprints.Get(path) is { } id ? $"{id}|{file.Length}" : PathKey(file);
+    }
+    // How older versions knew a video: its path, size and time of change.
+    static string PathKey(FileInfo file) => $"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
+    // Moves what older versions knew by path (sizes, failures, copies for every limit) to the contents key.
+    void Migrate(List<string> videos)
+    {
+        bool changed = false;
+        foreach (var video in videos)
+        {
+            var file = new FileInfo(video);
+            if (!file.Exists || SourceKey(video) is not { } key) continue;
+            var old = PathKey(file);
+            if (key == old) continue;
+            Probe? probe;
+            lock (sync)
+            {
+                if (!index.Remove(old, out probe)) continue;
+                index.TryAdd(key, probe);
+                changed = true;
+            }
+            foreach (var limit in Settings.FpsLimits)
+                if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, limit) is { } plan
+                    && CopyName(old, plan) is var from && File.Exists(from) && CopyName(key, plan) is var to && !File.Exists(to))
+                    try { File.Move(from, to); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        if (changed) lock (sync) SaveIndex();
     }
     // The copy still covers the whole screen in every scaling mode (the larger of the two scale factors), so
     // nothing is lost on screen. A video that is less than about 10% larger than needed keeps its size.
@@ -156,6 +195,7 @@ internal sealed class Optimizer : IDisposable
         if (list.Count == 0) { Say("Ждёт списка обоев…"); return; }
         if (!File.Exists(engine)) { Say("Нет файла engine\\mpv.exe."); return; }
         var videos = list.Where(f => Videos.Contains(Path.GetExtension(f))).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Migrate(videos);
         // Sizes and frame rates first: a short helper player for each file not seen before.
         for (int i = 0; i < videos.Count; i++)
         {
@@ -179,13 +219,18 @@ internal sealed class Optimizer : IDisposable
             lock (sync)
             {
                 bool changed = false;
-                foreach (var probe in index.Values.Where(p => p.Failed && p.FailedWith != null && p.FailedWith != Encoders[encoder].Name)) { probe.Failed = false; probe.FailedWith = null; changed = true; }
+                foreach (var probe in index.Values.Where(p => p.Failed && p.FailedWith != null && p.FailedWith != Encoders[encoder].Name + Revision)) { probe.Failed = false; probe.FailedWith = null; changed = true; }
                 if (changed) SaveIndex();
             }
+        // Copies for the current limit are made; those for the other limits stay too, so switching back is instant.
         var work = new List<(string Path, string Copy, Plan Plan)>();
+        var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var video in videos)
-            if (CopyFor(video, out var plan) is { } copy && keep.Add(copy) && !File.Exists(copy)) work.Add((video, copy, plan));
+        {
+            if (CopyFor(video, out var plan) is { } copy && wanted.Add(copy) && !File.Exists(copy)) work.Add((video, copy, plan));
+            foreach (var limit in Settings.FpsLimits) if (CopyFor(video, out _, limit: limit) is { } other) keep.Add(other);
+        }
         for (int i = 0; i < work.Count; i++)
         {
             var (path, copy, plan) = work[i];
@@ -196,7 +241,7 @@ internal sealed class Optimizer : IDisposable
             }
             if (new DriveInfo(folder).AvailableFreeSpace < MinimumFree) { Say("Остановлено: на диске с папкой .cache меньше 2 ГБ свободного места."); return; }
             var name = Path.GetFileNameWithoutExtension(path);
-            var number = $"{keep.Count - work.Count + i + 1} из {keep.Count}";
+            var number = $"{wanted.Count - work.Count + i + 1} из {wanted.Count}";
             if (encoder < 0)
             {
                 Say($"Облегчение видео {number}: подбор кодировщика видеокарты…");
@@ -213,22 +258,40 @@ internal sealed class Optimizer : IDisposable
             try
             {
                 if (await Encode(path, copy, plan, encoder, false, value => { percent = value; Say($"Облегчение видео {number}: «{name}» — {value}%" + Using); }, token)) Ready?.Invoke(path);
-                else Fail(path, $"Кодировщик {Encoders[encoder].Name} не смог облегчить файл ", Encoders[encoder].Name);
+                else Fail(path, $"Кодировщик {Encoders[encoder].Name} не смог облегчить файл ", Encoders[encoder].Name + Revision);
             }
             finally { working = null; }
         }
-        // Copies of removed or changed files and of an old screen size or limit; one that still plays goes next time.
-        foreach (var file in OwnFiles())
-            if (!keep.Contains(file)) try { File.Delete(file); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        Tidy(keep);
         int failed;
         lock (sync) failed = videos.Count(v => SourceKey(v) is { } k && index.TryGetValue(k, out var p) && p.Failed);
         long size = OwnFiles().Where(keep.Contains).Sum(f => new FileInfo(f).Length);
         var ru = CultureInfo.GetCultureInfo("ru-RU");
-        var text = keep.Count == 0
+        var text = wanted.Count == 0
             ? "Тяжёлых видео нет: все не больше экрана" + (maxFps > 0 ? $" и не чаще {maxFps} кадров/с." : ".")
-            : $"Готово: облегчено {keep.Count(File.Exists)} видео, копии занимают " + (size >= 1L << 30 ? (size / (double)(1L << 30)).ToString("0.0", ru) + " ГБ." : (size >> 20) + " МБ.");
+            : $"Готово: облегчено {wanted.Count(File.Exists)} видео, копии занимают " + (size >= 1L << 30 ? (size / (double)(1L << 30)).ToString("0.0", ru) + " ГБ." : (size >> 20) + " МБ.");
         if (failed > 0) text += $" Не удалось облегчить: {failed} (они играют как есть, подробности в errors.log).";
-        Say(text + (keep.Count > 0 ? Using : "") + DriverHint);
+        Say(text + (wanted.Count > 0 ? Using : "") + DriverHint);
+    }
+    // Leftovers of stopped encodes go at once. A copy whose video is gone (deleted, changed, or the screen size
+    // changed) goes after OrphanGrace; a copy that still plays is deleted on a later pass.
+    void Tidy(HashSet<string> keep)
+    {
+        long now = Environment.TickCount64;
+        foreach (var file in OwnFiles().ToList())
+        {
+            if (keep.Contains(file)) { orphans.Remove(file); continue; }
+            bool leftover = !file.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".test.mp4", StringComparison.OrdinalIgnoreCase);
+            if (!leftover && (!orphans.TryGetValue(file, out var since) || now - since < (long)OrphanGrace.TotalMilliseconds)) { orphans.TryAdd(file, now); continue; }
+            try { File.Delete(file); orphans.Remove(file); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        foreach (var gone in orphans.Keys.Where(f => !File.Exists(f)).ToList()) orphans.Remove(gone);
+        // Nothing else may wake the optimizer: it looks again once the grace time is over.
+        if (orphans.Count > 0 && !cleanupPlanned)
+        {
+            cleanupPlanned = true;
+            _ = Task.Delay(OrphanGrace + TimeSpan.FromSeconds(30), stop.Token).ContinueWith(t => { cleanupPlanned = false; if (!t.IsCanceled) wake.Release(); }, TaskScheduler.Default);
+        }
     }
     string Using => encoder >= 0 && encoder < Encoders.Length ? $" Кодировщик: {Encoders[encoder].Name}." : "";
     string DriverHint => driver != null && (encoder < 0 || Encoders[Math.Min(encoder, Encoders.Length - 1)].Codec != "h264_nvenc")
@@ -308,7 +371,9 @@ internal sealed class Optimizer : IDisposable
         var part = output + ".part";
         var pipe = $"wallsets-encode-{Environment.ProcessId}-{Interlocked.Increment(ref requests)}";
         var graph = (plan.Step > 1 ? $"framestep={plan.Step}," : "") + $"scale={plan.Width}:{plan.Height}:flags=bicubic";
-        var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options, "--oac=aac", "--oacopts=b=192k", "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
+        // Only the picture: the player takes the sound from the original file. It also avoids an mpv 0.41 hang when
+        // a soundtrack starts a little after the picture.
+        var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--aid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options, "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
         // A test keeps mpv's log: the reason an encoder does not work goes to errors.log.
         var log = output + ".log";
         if (test) { args.Add("--length=1"); args.Add("--log-file=" + log); }

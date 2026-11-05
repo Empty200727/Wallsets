@@ -171,3 +171,31 @@ PASS Own music player under Wine (test program around Music.cs, with --ao=null s
 NOT CHECKED under Wine: the tile menu. A right click crashes inside WinForms' menu filter
 ("Failed to get thread's DpiAwareness context") in Wine; the build before these changes crashes the same
 way, so it is Wine's, not Windows'. Real sound output, NVENC/MF on real hardware.
+
+Update 2026-11-05 (2): optimizer copies, window sizes, memory
+From the user's errors.log: one video ("Rain Sakura", 3840x2160, AAC sound starting 21 ms after the picture)
+never got past "-1%" with any encoder. Reproduced with the bundled mpv 0.41 under Wine even with the software
+mpeg4 encoder: after "delaying audio start 0.021" mpv spins at 100% CPU and writes nothing (44 bytes in 5 min).
+mpv 0.37 on Linux encodes it; --initial-audio-sync=no and --audio-delay do not help; --aid=no does.
+- Copies are now picture only (--aid=no). When a copy plays, the original file is given to mpv as
+  audio-files, so its own soundtrack plays (no re-encoding of sound). PASS mpv 0.37 over IPC and mpv 0.41
+  in Lua accept audio-files as a list; the external audio track is selected by aid=auto and is gone
+  after audio-files is cleared.
+- Copies and what is known about a video are keyed by its contents (Fingerprints: size, first and last
+  64 KB) instead of its path. Copies made by the previous build are renamed to the new keys.
+- Copies for every frame-rate limit stay; copies without a video go after 10 minutes.
+- Failures of the earlier way (with sound) are tried again (FailedWith carries a revision).
+PASS under Wine (test build with mpeg4 last): 6 copies of the previous build renamed, nothing re-encoded;
+     a renamed video and a video moved to another set kept their copies; "Rain Sakura" encoded to the end
+     (1920x1080, picture only, 86.67 s); 30 -> 60 made 3 new copies, back to 30 needed none; with the
+     grace time set to 20 s in a test build, the copies of a removed video stayed, then went ~50 s later.
+PASS Optimizer window: "Превью" Мелкие / Средние / Крупные (saved as OptimizerThumbnails); the "ошибка"
+     badge sits at the right edge with the same margin as the number at the left.
+PASS Memory under Wine: 30 cycles of opening the settings and the optimizer window and closing both, with
+     a full collection before each reading: 203, 204, 204 MB (the earlier rise without collections was not
+     a leak). Idle CPU 0%. --status now reports managedMB, gdiObjects and userObjects (Wine reports 0
+     GUI objects; real Windows counts them).
+NOT REPRODUCED: copies of a wallpaper ("Сколько раз в очереди" 10) vanishing when another set is ticked or
+unticked: tested with "По умолчанию", "Вручную" in a combined queue and "Выбранный набор" (each tick and
+untick kept the 10 copies and Counts in settings.json); the tile menu itself cannot be opened under Wine.
+PASS Built-in self-tests under Wine 9.0: 32 checks (new: a renamed file keeps its content key).

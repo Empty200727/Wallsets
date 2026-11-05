@@ -177,10 +177,13 @@ internal sealed class ThumbnailGrid : ScrollableControl
         TextRenderer.DrawText(g, (index + 1).ToString(), Font, numberRect, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         if (item.Badge != null)
         {
-            int width = TextRenderer.MeasureText(item.Badge, Font).Width + (int)(10 * ScaleFactor);
-            var badgeRect = new Rectangle(imageRect.Right - 4 - width, imageRect.Y + 4, width, numberRect.Height);
+            // Snug around the text and as far from the right edge as the number is from the left one.
+            const TextFormatFlags flags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+            int pad = (int)(6 * ScaleFactor), margin = numberRect.X - imageRect.X;
+            int width = Math.Min(TextRenderer.MeasureText(g, item.Badge, Font, Size.Empty, flags).Width + pad * 2, imageRect.Width - 2 * margin);
+            var badgeRect = new Rectangle(imageRect.Right - margin - width, numberRect.Y, width, numberRect.Height);
             using (var badge = new SolidBrush(item.Alert ? Color.FromArgb(220, Ui.Danger) : Color.FromArgb(220, 206, 128, 32))) g.FillRectangle(badge, badgeRect);
-            TextRenderer.DrawText(g, item.Badge, Font, badgeRect, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, item.Badge, Font, badgeRect, Color.White, flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
         int y = imageRect.Bottom + (int)(5 * ScaleFactor);
         if (showNames)

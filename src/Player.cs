@@ -233,6 +233,14 @@ internal sealed class Player : IDisposable
     public async Task SetLoop(bool on) { Loop = on; if (Running) await Set("loop-file", LoopValue); }
     // mpv's own software volume: it does not change the Windows volume or other programs.
     public Task SetVolume(int value) => Command("set_property", "volume", value);
+    // Whether the graphics card decodes the loaded video (null: not known yet) and its codec.
+    public async Task<(bool? Hardware, string? Codec)> Decoder()
+    {
+        var hwdec = await OptionalProperty("hwdec-current");
+        var codec = await OptionalProperty("current-tracks/video/codec");
+        bool? hardware = hwdec.ValueKind == JsonValueKind.String ? hwdec.GetString() is { Length: > 0 } name && name != "no" : null;
+        return (hardware, codec.ValueKind == JsonValueKind.String ? codec.GetString() : null);
+    }
     public async Task<JsonElement> OptionalProperty(string name)
     {
         try { return await Command("get_property", name); }

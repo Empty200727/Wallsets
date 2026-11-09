@@ -72,9 +72,19 @@ internal static class Program
         Application.ThreadException += (_, e) => Log(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log(e.ExceptionObject as Exception ?? new Exception("Unhandled error"));
         Application.AddMessageFilter(new WheelGuard());
+        // The theme is chosen before the first window is made: windows take their colors when they are built.
+        Ui.UseTheme(Ui.WantsDark(Settings.Load(SettingsPath).Theme));
         try { Application.Run(new MainForm(args.Contains("--tray"))); }
         catch (Exception ex) { Log(ex); MessageBox.Show(ex.Message, "Wallsets", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        // Another theme was chosen: the next Wallsets may start once this one let go of its single-instance lock.
+        if (Restart)
+        {
+            mutex.ReleaseMutex(); mutex.Dispose();
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath ?? Path.Combine(Root, "Wallsets.exe")) { UseShellExecute = false, WorkingDirectory = Root }); }
+            catch (Exception ex) { Log(ex); }
+        }
     }
+    internal static bool Restart;
     internal static void Log(Exception ex)
     {
         try { File.AppendAllText(Path.Combine(Home, "errors.log"), DateTime.Now.ToString("s") + " " + ex + Environment.NewLine); } catch { }

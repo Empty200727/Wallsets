@@ -13,19 +13,148 @@ internal static class Ui
     public static Padding P(int all) => new(S(all));
     public static Padding P(int left, int top, int right, int bottom) => new(S(left), S(top), S(right), S(bottom));
 
-    public static readonly Color Window = Color.FromArgb(239, 242, 245);
-    public static readonly Color Surface = Color.White;
-    public static readonly Color Border = Color.FromArgb(221, 226, 231);
-    public static readonly Color Text = Color.FromArgb(27, 34, 38);
-    public static readonly Color Muted = Color.FromArgb(96, 108, 115);
-    public static readonly Color Accent = Color.FromArgb(31, 124, 112);
-    public static readonly Color AccentDark = Color.FromArgb(23, 98, 89);
-    public static readonly Color AccentLight = Color.FromArgb(222, 240, 237);
-    public static readonly Color Hover = Color.FromArgb(235, 239, 242);
-    public static readonly Color Pressed = Color.FromArgb(220, 226, 231);
-    public static readonly Color Danger = Color.FromArgb(168, 44, 52);
-    public static readonly Color Good = Color.FromArgb(28, 125, 70);
-    public static readonly Color Warning = Color.FromArgb(178, 104, 16);
+    // Colors of the light theme; UseTheme switches them all to the dark one before the first window is made.
+    public static Color Window { get; private set; } = Color.FromArgb(239, 242, 245);
+    public static Color Surface { get; private set; } = Color.White;
+    public static Color Border { get; private set; } = Color.FromArgb(221, 226, 231);
+    public static Color Text { get; private set; } = Color.FromArgb(27, 34, 38);
+    public static Color Muted { get; private set; } = Color.FromArgb(96, 108, 115);
+    public static Color Accent { get; private set; } = Color.FromArgb(31, 124, 112);
+    public static Color AccentDark { get; private set; } = Color.FromArgb(23, 98, 89);
+    public static Color AccentLight { get; private set; } = Color.FromArgb(222, 240, 237);
+    public static Color Hover { get; private set; } = Color.FromArgb(235, 239, 242);
+    public static Color Pressed { get; private set; } = Color.FromArgb(220, 226, 231);
+    public static Color Danger { get; private set; } = Color.FromArgb(168, 44, 52);
+    public static Color Good { get; private set; } = Color.FromArgb(28, 125, 70);
+    public static Color Warning { get; private set; } = Color.FromArgb(178, 104, 16);
+    // Text fields, tiles and their empty pictures, the drop place of a dragged tile, menus, "danger" buttons.
+    public static Color Field { get; private set; } = Color.FromArgb(246, 248, 249);
+    public static Color Tile { get; private set; } = Color.FromArgb(244, 246, 248);
+    public static Color Placeholder { get; private set; } = Color.FromArgb(226, 231, 235);
+    public static Color PlaceholderIcon { get; private set; } = Color.FromArgb(113, 128, 135);
+    public static Color DropTarget { get; private set; } = Color.FromArgb(232, 244, 242);
+    public static Color Menu { get; private set; } = Color.FromArgb(250, 251, 252);
+    public static Color DangerBorder { get; private set; } = Color.FromArgb(232, 190, 193);
+    public static Color DangerHover { get; private set; } = Color.FromArgb(252, 238, 239);
+    public static Color DangerPressed { get; private set; } = Color.FromArgb(246, 222, 224);
+    public static bool Dark { get; private set; }
+
+    // "dark", "light" or "system" (the app mode of Windows: Settings > Personalization > Colors).
+    public static bool WantsDark(string theme) => theme switch
+    {
+        "dark" => true,
+        "light" => false,
+        _ => Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme", 1) is 0,
+    };
+    // Graphite surfaces with the same teal accent, a little lighter so it reads on dark.
+    public static void UseTheme(bool dark)
+    {
+        Dark = dark;
+        if (!dark) return;
+        Window = Color.FromArgb(22, 24, 27); Surface = Color.FromArgb(32, 35, 39); Border = Color.FromArgb(52, 57, 63);
+        Text = Color.FromArgb(229, 233, 236); Muted = Color.FromArgb(148, 157, 165);
+        Accent = Color.FromArgb(38, 150, 136); AccentDark = Color.FromArgb(30, 124, 112); AccentLight = Color.FromArgb(29, 66, 62);
+        Hover = Color.FromArgb(43, 47, 52); Pressed = Color.FromArgb(53, 58, 64);
+        Danger = Color.FromArgb(236, 112, 120); Good = Color.FromArgb(98, 196, 136); Warning = Color.FromArgb(232, 170, 80);
+        Field = Color.FromArgb(25, 28, 31); Tile = Color.FromArgb(40, 44, 49); Placeholder = Color.FromArgb(50, 55, 61); PlaceholderIcon = Color.FromArgb(128, 138, 146);
+        DropTarget = Color.FromArgb(28, 58, 54); Menu = Color.FromArgb(36, 39, 44);
+        DangerBorder = Color.FromArgb(104, 56, 60); DangerHover = Color.FromArgb(58, 38, 41); DangerPressed = Color.FromArgb(70, 44, 47);
+        ToolStripManager.Renderer = new MenuRenderer();
+    }
+    sealed class MenuRenderer() : ToolStripProfessionalRenderer(new MenuColors())
+    {
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e) { e.TextColor = e.Item.Enabled ? Text : Muted; base.OnRenderItemText(e); }
+        protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e) { e.ArrowColor = Text; base.OnRenderArrow(e); }
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+        {
+            // The check mark of Windows is black: drawn in the text color instead.
+            var r = e.ImageRectangle; r.Inflate(2, 2);
+            using (var fill = new SolidBrush(AccentLight)) e.Graphics.FillRectangle(fill, r);
+            using var font = Icons(9);
+            TextRenderer.DrawText(e.Graphics, "\uE73E", font, r, Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+    sealed class MenuColors : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground => Menu;
+        public override Color ImageMarginGradientBegin => Menu;
+        public override Color ImageMarginGradientMiddle => Menu;
+        public override Color ImageMarginGradientEnd => Menu;
+        public override Color MenuBorder => Border;
+        public override Color MenuItemBorder => Accent;
+        public override Color MenuItemSelected => Hover;
+        public override Color MenuItemSelectedGradientBegin => Hover;
+        public override Color MenuItemSelectedGradientEnd => Hover;
+        public override Color MenuItemPressedGradientBegin => Pressed;
+        public override Color MenuItemPressedGradientEnd => Pressed;
+        public override Color CheckBackground => AccentLight;
+        public override Color CheckSelectedBackground => AccentLight;
+        public override Color CheckPressedBackground => AccentLight;
+        public override Color ButtonSelectedBorder => Accent;
+        public override Color SeparatorDark => Border;
+        public override Color SeparatorLight => Border;
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+    [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern int SetWindowTheme(IntPtr hwnd, string? app, string? idList);
+    // Dark title bar, scroll bars and fields for a window and everything put into it later. Windows draws message
+    // boxes itself, so they stay in its own colors.
+    public static void Dress(Form form)
+    {
+        if (!Dark) return;
+        form.HandleCreated += (_, _) =>
+        {
+            int on = 1;
+            // 20 on Windows 10 2004 and later, 19 before.
+            if (DwmSetWindowAttribute(form.Handle, 20, ref on, sizeof(int)) != 0) DwmSetWindowAttribute(form.Handle, 19, ref on, sizeof(int));
+        };
+        Dress((Control)form);
+    }
+    public static void Dress(Control control)
+    {
+        if (!Dark) return;
+        Style(control);
+        foreach (Control child in control.Controls) Dress(child);
+        control.ControlAdded += (_, e) => { if (e.Control != null) Dress(e.Control); };
+    }
+    static void Style(Control control)
+    {
+        switch (control)
+        {
+            case TextBoxBase or NumericUpDown or DomainUpDown or ListBox:
+                control.BackColor = Field; control.ForeColor = Text; break;
+            case ComboBox combo:
+                combo.FlatStyle = FlatStyle.Flat; combo.BackColor = Field; combo.ForeColor = Text; break;
+            case TrackBar track when track.Parent != null:
+                track.BackColor = track.Parent.BackColor; break;
+        }
+        // Scroll bars, drop-down lists and check boxes of the dark Explorer style.
+        if (control is ScrollableControl or ComboBox or ListBox or TextBoxBase or CheckBox or RadioButton or TrackBar)
+        {
+            if (control.IsHandleCreated) SetWindowTheme(control.Handle, control is ComboBox ? "DarkMode_CFD" : "DarkMode_Explorer", null);
+            else control.HandleCreated += (_, _) => SetWindowTheme(control.Handle, control is ComboBox ? "DarkMode_CFD" : "DarkMode_Explorer", null);
+        }
+    }
+    // Tooltips in the colors of the theme (Windows draws them light otherwise).
+    public static ToolTip Tips(ToolTip tips)
+    {
+        if (!Dark) return tips;
+        tips.OwnerDraw = true;
+        tips.Popup += (_, e) =>
+        {
+            var text = e.AssociatedControl == null ? "" : tips.GetToolTip(e.AssociatedControl);
+            var size = TextRenderer.MeasureText(text, Small);
+            e.ToolTipSize = new Size(size.Width + S(14), size.Height + S(10));
+        };
+        tips.Draw += (_, e) =>
+        {
+            using (var fill = new SolidBrush(Menu)) e.Graphics.FillRectangle(fill, e.Bounds);
+            using (var pen = new Pen(Border)) e.Graphics.DrawRectangle(pen, e.Bounds.X, e.Bounds.Y, e.Bounds.Width - 1, e.Bounds.Height - 1);
+            var inner = Rectangle.Inflate(e.Bounds, -S(7), -S(5));
+            TextRenderer.DrawText(e.Graphics, e.ToolTipText, Small, inner, Text, TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix);
+        };
+        return tips;
+    }
 
     // Point sizes already follow the Windows scaling.
     public static readonly Font Body = new("Segoe UI", 9.75f);
@@ -56,9 +185,9 @@ internal static class Ui
     {
         var b = Styled(new Button { Text = text, Font = Body, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(0, S(36)), Padding = P(12, 0, 12, 0), Margin = P(0, 0, 8, 0), UseMnemonic = false });
         b.FlatAppearance.BorderSize = accent ? 0 : 1;
-        b.FlatAppearance.BorderColor = danger ? Color.FromArgb(232, 190, 193) : Border;
+        b.FlatAppearance.BorderColor = danger ? DangerBorder : Border;
         if (accent) { b.BackColor = Accent; b.ForeColor = Color.White; b.FlatAppearance.MouseOverBackColor = AccentDark; b.FlatAppearance.MouseDownBackColor = AccentDark; }
-        if (danger) { b.ForeColor = Danger; b.FlatAppearance.MouseOverBackColor = Color.FromArgb(252, 238, 239); b.FlatAppearance.MouseDownBackColor = Color.FromArgb(246, 222, 224); }
+        if (danger) { b.ForeColor = Danger; b.FlatAppearance.MouseOverBackColor = DangerHover; b.FlatAppearance.MouseDownBackColor = DangerPressed; }
         b.Click += (_, _) => action(); return b;
     }
     static Button Styled(Button b)
@@ -79,7 +208,7 @@ internal static class Ui
         new() { Text = text, Font = font ?? Body, ForeColor = color ?? Text, AutoSize = true, UseMnemonic = false, BackColor = Surface };
 }
 
-// White panel with rounded corners and an optional heading.
+// Panel with rounded corners in the surface color and an optional heading.
 internal class Card : Panel
 {
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]

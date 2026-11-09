@@ -65,6 +65,9 @@ public sealed class Settings
     public bool Optimize { get; set; } = true;
     // Tile size in the window of lightened videos: small, medium or large.
     public int OptimizerThumbnails { get; set; }
+    // "system" (the app mode of Windows), "light" or "dark".
+    public string Theme { get; set; } = "system";
+    public static readonly string[] Themes = ["system", "light", "dark"];
     // Videos change when they have played to the end; pictures still use IntervalSeconds.
     public bool ByVideoLength { get; set; }
     public bool Floating { get; set; }
@@ -126,6 +129,7 @@ public sealed class Settings
             if (!ScalingModes.Contains(s.Scaling)) s.Scaling = "fill";
             if (!FpsLimits.Contains(s.MaxFps)) s.MaxFps = 30;
             s.OptimizerThumbnails = Math.Clamp(s.OptimizerThumbnails, 0, 2);
+            if (!Themes.Contains(s.Theme)) s.Theme = "system";
             s.Hotkeys ??= new();
             if (s.Area is { Valid: false }) s.Area = null;
             if (s.LastArea is { Valid: false }) s.LastArea = null;

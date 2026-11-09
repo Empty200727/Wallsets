@@ -14,6 +14,7 @@ internal sealed class OptimizerForm : Form
 
     public OptimizerForm(MainForm main)
     {
+        Ui.Dress(this);
         this.main = main;
         Text = "Облегчение видео · Wallsets"; Icon = main.Icon; Font = Ui.Body; BackColor = Ui.Window; ForeColor = Ui.Text;
         AutoScaleMode = AutoScaleMode.None; StartPosition = FormStartPosition.Manual; ShowInTaskbar = false; MinimizeBox = false;

@@ -19,7 +19,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
     // Tile positions by ThumbnailItem.Id; pictures are shared by the copies of a file.
     readonly Dictionary<string, PointF> positions = new(StringComparer.OrdinalIgnoreCase);
     readonly System.Windows.Forms.Timer animation = new() { Interval = 16 };
-    readonly ToolTip tooltip = new();
+    readonly ToolTip tooltip = Ui.Tips(new());
     // Tiles per row in a maximized main window for each size: small, medium, large, extra large.
     public static readonly int[] ColumnsWhenMaximized = [12, 9, 6, 4];
     List<ThumbnailItem> items = [];
@@ -125,7 +125,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
                 var placeholder = ScreenRect(slot); placeholder.Inflate(-2, -2);
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                 using var path = Ui.RoundedPath(placeholder, (int)(7 * ScaleFactor));
-                using var fill = new SolidBrush(Color.FromArgb(232, 244, 242)); e.Graphics.FillPath(fill, path);
+                using var fill = new SolidBrush(Ui.DropTarget); e.Graphics.FillPath(fill, path);
                 using var pen = new Pen(Ui.Accent, 2) { DashStyle = DashStyle.Dash }; e.Graphics.DrawPath(pen, path);
                 e.Graphics.SmoothingMode = SmoothingMode.None;
                 continue;
@@ -153,7 +153,7 @@ internal sealed class ThumbnailGrid : ScrollableControl
         }
         bool marked = item.Id == selected || ghost;
         using (var tilePath = Ui.RoundedPath(rect, radius))
-        using (var bg = new SolidBrush(marked ? Ui.AccentLight : Color.FromArgb(244, 246, 248)))
+        using (var bg = new SolidBrush(marked ? Ui.AccentLight : Ui.Tile))
             g.FillPath(bg, tilePath);
         g.SmoothingMode = SmoothingMode.None;
         var imageRect = new Rectangle(rect.X + 4, rect.Y + 4, rect.Width - 8, ImageHeight);
@@ -168,9 +168,9 @@ internal sealed class ThumbnailGrid : ScrollableControl
         }
         else
         {
-            using var placeholder = new SolidBrush(Color.FromArgb(226, 231, 235)); g.FillRectangle(placeholder, imageRect);
+            using var placeholder = new SolidBrush(Ui.Placeholder); g.FillRectangle(placeholder, imageRect);
             iconFont ??= new Font(Program.IconFont, 22);
-            TextRenderer.DrawText(g, "\uEB9F", iconFont, imageRect, Color.FromArgb(113, 128, 135), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            TextRenderer.DrawText(g, "\uEB9F", iconFont, imageRect, Ui.PlaceholderIcon, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
         var numberRect = new Rectangle(imageRect.X + 4, imageRect.Y + 4, (int)(30 * ScaleFactor), (int)(20 * ScaleFactor));
         using (var badge = new SolidBrush(Color.FromArgb(185, 20, 25, 27))) g.FillRectangle(badge, numberRect);

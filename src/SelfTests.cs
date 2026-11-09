@@ -41,11 +41,12 @@ internal static class SelfTests
             Check(Library.IsPicture("x.JPG") && !Library.IsPicture("x.gif") && !Library.IsPicture("x.mp4"), "Pictures use the interval also when videos change at their end");
             Check(Library.AdjacentIndex(0, 4, -1) == 3 && Library.AdjacentIndex(3, 4, 1) == 0 && Library.AdjacentIndex(0, 1, -1) == 0 && Library.AdjacentIndex(-1, 0, -1) == -1, "Previous and next wrap correctly including empty/single queues");
             var settingsFile = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + ".json");
-            File.WriteAllText(settingsFile, "{\"SingleSet\":true,\"Selected\":[\"one\",\"two\",\"two\"],\"MusicVolume\":250,\"Music\":true,\"Scaling\":\"zoom\",\"Hotkeys\":null,\"MaxFps\":45}");
+            File.WriteAllText(settingsFile, "{\"SingleSet\":true,\"Selected\":[\"one\",\"two\",\"two\"],\"MusicVolume\":250,\"Music\":true,\"Scaling\":\"zoom\",\"Hotkeys\":null,\"MaxFps\":45,\"Theme\":\"pink\"}");
             var loaded = Settings.Load(settingsFile); File.Delete(settingsFile);
             Check(loaded.SingleSet && loaded.Selected.SequenceEqual(["two"]) && loaded.Music && loaded.MusicVolume == 100, "Single-set mode keeps one ticked set; music volume is limited to 0-100%");
             Check(loaded.Scaling == "fill" && loaded.Hotkeys.Count == 0 && !loaded.ShowNames && !loaded.ShowSetNames, "Unknown scaling falls back to fill; missing hotkeys use defaults; missing caption options stay off");
-            Check(loaded.MaxFps == 30 && loaded.Optimize, "Unknown frame-rate limit falls back to 30; lighter copies are on unless switched off");
+            Check(loaded.MaxFps == 30 && loaded.Optimize && loaded.Theme == "system" && new Settings().Theme == "system" && Ui.WantsDark("dark") && !Ui.WantsDark("light"),
+                "Unknown frame-rate limit falls back to 30, unknown theme to the Windows one; lighter copies are on unless switched off");
             var hotkey = Hotkey.Parse("Ctrl+Alt+P");
             Check(hotkey.ToString() == "Ctrl+Alt+P" && hotkey.Modifiers == 3 && hotkey.Code == Keys.P && Hotkey.Parse(hotkey.ToString()) == hotkey
                 && Hotkey.Parse("Ctrl+Shift+F5").IsValid && Hotkey.Parse("F9").IsValid && Hotkey.Parse("P").IsEmpty && Hotkey.Parse("Shift+P").IsEmpty
@@ -63,8 +64,9 @@ internal static class SelfTests
             Check(Optimizer.PlanFor(3840, 2160, 120, screen, 30) == new Optimizer.Plan(1920, 1080, 4) && Optimizer.PlanFor(1920, 1080, 30, screen, 30) == null
                 && Optimizer.PlanFor(1920, 1080, 60, screen, 30) == new Optimizer.Plan(1920, 1080, 2) && Optimizer.PlanFor(3840, 2160, 60, screen, 0) == new Optimizer.Plan(1920, 1080, 1)
                 && Optimizer.PlanFor(2560, 1440, 30, new Size(1920, 1200), 30) == new Optimizer.Plan(2134, 1200, 1) && Optimizer.PlanFor(2048, 1152, 30, screen, 30) == null
-                && Optimizer.PlanFor(1366, 768, 30, screen, 30) == null && Optimizer.PlanFor(0, 0, 30, screen, 30) == null,
-                "Lighter copies: scaled to cover the screen and to the frame-rate limit; files that are already light get none");
+                && Optimizer.PlanFor(1366, 768, 30, screen, 30) == null && Optimizer.PlanFor(0, 0, 30, screen, 30) == null
+                && Optimizer.PlanFor(1280, 720, 30, screen, 30, reencode: true) == new Optimizer.Plan(1280, 720, 1),
+                "Lighter copies: scaled to cover the screen and to the frame-rate limit; files that are already light get none, unless the graphics card cannot decode them");
             var box = (string type, int size) => { var b = new byte[size]; System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(b, (uint)size); System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4); return b; };
             var mp4 = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + ".mp4");
             File.WriteAllBytes(mp4, [.. box("ftyp", 24), .. box("moov", 40), .. box("mdat", 100)]);

@@ -79,6 +79,7 @@ internal sealed class CropPreview : Form
 
     public CropPreview(MainForm main)
     {
+        Ui.Dress(this);
         this.main = main;
         Text = "Как обои обрезаются · Wallsets"; Icon = main.Icon; Font = Ui.Body; BackColor = Color.FromArgb(36, 40, 44); ForeColor = Color.White;
         AutoScaleMode = AutoScaleMode.None; StartPosition = FormStartPosition.CenterScreen; ShowInTaskbar = false; MinimizeBox = false;

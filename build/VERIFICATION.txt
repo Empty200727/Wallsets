@@ -218,3 +218,17 @@ Update 2026-11-09: saved-queue numbers, copy deletion, start with Windows
   Wallsets из другой папки"; untick removed both; tick wrote this exe; a StartupApproved mark 03 shows
   "Отключено в диспетчере задач".
 PASS Built-in self-tests under Wine 9.0: 34 checks (new: Run commands of any Wallsets.exe, saved-queue numbers).
+
+Update 2026-11-09 (2): dark theme, copies for videos the graphics card cannot decode
+- Theme in the settings: "Как в Windows" (AppsUseLightTheme), "Светлая", "Тёмная". Colors are theme tokens
+  (no literal colors left in the windows except the crop preview, which is dark anyway); dark title bars
+  (DWMWA_USE_IMMERSIVE_DARK_MODE), dark Explorer scroll bars and fields (SetWindowTheme), owner-drawn
+  tooltips and a dark menu renderer. A new theme restarts Wallsets after a question.
+  PASS under Wine: main window, settings, tooltip and the window of lightened videos in the dark theme;
+  the light theme looks as before; "Тёмная" -> "Yes" ended the process and a new one started dark.
+  NOT CHECKED under Wine: dark title bars, scroll bars and check boxes (Wine draws its own), menus (Wine
+  cannot open them).
+- After a video has played 3 s, the player's hwdec-current tells whether the graphics card decodes it; a
+  video decoded on the processor (and not H.264) gets an H.264 copy even when size and frame rate need
+  none. PASS the bundled mpv 0.41 reports hwdec-current and current-tracks/video/codec.
+PASS Built-in self-tests under Wine 9.0: 34 checks.

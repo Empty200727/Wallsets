@@ -32,7 +32,7 @@ internal sealed class MainForm : Form
     readonly CheckBox sound = Ui.ToggleButton("", "Проигрывать с музыкой");
     readonly TrackBar volume = new() { Minimum = 0, Maximum = 100, SmallChange = 5, LargeChange = 10, TickStyle = TickStyle.None, AutoSize = false, Height = Ui.S(30), Anchor = AnchorStyles.Left | AnchorStyles.Right, BackColor = Ui.Surface, AccessibleName = "Громкость музыки" };
     readonly Label volumeText = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, BackColor = Ui.Surface, ForeColor = Ui.Muted };
-    readonly ToolTip tips = new();
+    readonly ToolTip tips = Ui.Tips(new());
     readonly NotifyIcon tray = new() { Text = "Wallsets", Visible = true };
     readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     readonly System.Windows.Forms.Timer scanTimer = new() { Interval = 700 };
@@ -73,6 +73,7 @@ internal sealed class MainForm : Form
 
     public MainForm(bool startInTray)
     {
+        Ui.Dress(this);
         this.startInTray = startInTray;
         Directory.CreateDirectory(setsRoot);
         try { Directory.CreateDirectory(musicRoot); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -272,6 +273,8 @@ internal sealed class MainForm : Form
         dialog.ShowDialog(this);
         // "Отключить и выйти" in the settings: the window is closed first, then Wallsets.
         if (dialog.ExitRequested) Exit();
+        // Another theme: Wallsets starts again with it (the wallpaper goes on, the Windows background is not touched).
+        else if (dialog.RestartRequested) { Program.Restart = true; exiting = true; Cleanup(); Close(); }
     }
 
     // ---- state used by the settings window ----
@@ -349,6 +352,7 @@ internal sealed class MainForm : Form
     internal List<string> OptimizedCopies => optimizer.CopiesFor(settings.MaxFps);
     internal string OptimizerStatus => optimizer.Status;
     internal List<Optimizer.Item> OptimizerItems => optimizer.Items();
+    internal void SetTheme(string theme) { settings.Theme = theme; Save(); }
     internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
     internal void SetAnyWindowPause(bool on) { settings.PauseOnAnyWindow = on; Save(); CheckAutoPause(); }
     internal void SetFloating(bool on) { settings.Floating = on; UpdateFloating(); Save(); }
@@ -655,7 +659,8 @@ internal sealed class MainForm : Form
     // Asks for a name in a small dialog; null when cancelled.
     string? AskName(string title, string placeholder, string action, string text = "")
     {
-        using var dialog = new Form { Text = title, Font = Ui.Body, BackColor = Ui.Surface, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(420, 132), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false };
+        using var dialog = new Form { Text = title, Font = Ui.Body, BackColor = Ui.Surface, ForeColor = Ui.Text, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(420, 132), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false };
+        Ui.Dress(dialog);
         var input = new TextBox { Left = Ui.S(20), Top = Ui.S(22), Width = Ui.S(380), PlaceholderText = placeholder, Text = text };
         var ok = Ui.TextButton(action, () => { }, accent: true); ok.DialogResult = DialogResult.OK;
         ok.AutoSize = false; ok.Bounds = new Rectangle(Ui.S(260), Ui.S(76), Ui.S(140), Ui.S(36));
@@ -704,10 +709,11 @@ internal sealed class MainForm : Form
         var menu = new ContextMenuStrip { Font = Ui.Body, ShowImageMargin = false, ShowCheckMargin = true, ShowItemToolTips = true };
         var name = Path.GetFileNameWithoutExtension(file.Path);
         var title = new ToolStripLabel(name.Length > 48 ? name[..47] + "…" : name) { Font = Ui.Strong, ForeColor = Ui.Text, ToolTipText = file.Relative };
-        var row = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = ProfessionalColors.ToolStripDropDownBackground, Margin = Padding.Empty, Padding = Ui.P(0, 2, 0, 2) };
+        var row = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Ui.Dark ? Ui.Menu : ProfessionalColors.ToolStripDropDownBackground, Margin = Padding.Empty, Padding = Ui.P(0, 2, 0, 2) };
         var label = new Label { Text = "Сколько раз в очереди", AutoSize = true, Anchor = AnchorStyles.Left, Font = Ui.Body, ForeColor = Ui.Text, BackColor = row.BackColor, UseMnemonic = false, Margin = Ui.P(0, 0, 10, 0) };
         var number = new NumericUpDown { Minimum = 1, Maximum = MaxCopies, Value = CountOf(file), Width = Ui.S(64), TextAlign = HorizontalAlignment.Right, Anchor = AnchorStyles.Left, Margin = Padding.Empty };
         row.Controls.Add(label, 0, 0); row.Controls.Add(number, 1, 0);
+        Ui.Dress(row);
         var count = new ToolStripControlHost(row) { AutoSize = true, Margin = Ui.P(0, 2, 0, 2) };
         var sound = new ToolStripMenuItem("Проигрывать со звуком") { CheckOnClick = true, Checked = SoundFor(file) };
         sound.ToolTipText = Fixed(file) ? "Звук этих обоев закреплён: кнопка звука для всех обоев его не меняет."
@@ -845,6 +851,7 @@ internal sealed class MainForm : Form
         catch { playbackFault = true; player.Stop(); music.Stop(); throw; }
         current = file; position = index; currentCopy = CopyAt(index); videoLeft = null;
         try { await ApplySound(); } catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException) { Program.Log(ex); }
+        if (source == path && !Library.IsPicture(path)) _ = CheckDecoder(path);
         ResetDeadline(); problem = null; playbackFault = false;
         nextHealth = Environment.TickCount64 + 5000;
         if (lastFrame == null) nextFrame = Environment.TickCount64 + 10000;
@@ -855,6 +862,19 @@ internal sealed class MainForm : Form
         // Remembered so that the same wallpaper comes back after a restart.
         settings.CurrentFile = file.Key; settings.CurrentCopy = currentCopy; settings.CurrentPath = Path.Combine(file.SetName, file.Relative);
         Save();
+    }
+    // A video the graphics card cannot decode (an old or rare codec) plays on the processor: the optimizer makes an
+    // H.264 copy of it. H.264 itself is left alone: there a copy would not help.
+    async Task CheckDecoder(string path)
+    {
+        await Task.Delay(3000);
+        if (exiting || current?.Path != path || player.Loaded != path) return;
+        try
+        {
+            var (hardware, codec) = await player.Decoder();
+            if (hardware == false && codec is not null and not "h264") optimizer.SoftwareDecoded(path);
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException or OperationCanceledException) { }
     }
     // Tile shows a video at its own size, so it always takes the original.
     string Source(string path) => settings.Scaling == "tile" ? path : optimizer.Resolve(path);
@@ -1024,7 +1044,8 @@ internal sealed class MainForm : Form
     {
         if (!settings.Floating) { floating?.Close(); floating = null; floatingPause = null; return; }
         if (floating != null) return;
-        floating = new Form { Text = "Пульт Wallsets", FormBorderStyle = FormBorderStyle.FixedToolWindow, ShowInTaskbar = false, TopMost = true, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(140, 46), StartPosition = FormStartPosition.Manual, BackColor = Ui.Surface, MaximizeBox = false, MinimizeBox = false };
+        floating = new Form { Text = "Пульт Wallsets", FormBorderStyle = FormBorderStyle.FixedToolWindow, ShowInTaskbar = false, TopMost = true, AutoScaleMode = AutoScaleMode.None, ClientSize = Ui.S(140, 46), StartPosition = FormStartPosition.Manual, BackColor = Ui.Surface, ForeColor = Ui.Text, MaximizeBox = false, MinimizeBox = false };
+        Ui.Dress(floating);
         var b = Screen.PrimaryScreen!.WorkingArea; floating.Location = new Point(b.Right - floating.Width - Ui.S(16), b.Bottom - floating.Height - Ui.S(16));
         var p = Ui.IconButton("", "Предыдущие обои", tips, () => Run(Previous)); p.Location = new Point(Ui.S(4), Ui.S(4));
         floatingPause = Ui.IconButton(pause.Text, "Пауза / продолжить", tips, TogglePause); floatingPause.Location = new Point(Ui.S(51), Ui.S(4));

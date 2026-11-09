@@ -6,15 +6,15 @@ internal sealed class SettingsForm : Form
     readonly MainForm main;
     readonly Settings settings;
     // Explanations appear after a second over a heading or an option, so the window stays short and quiet.
-    readonly ToolTip tips = new() { InitialDelay = 1000, ReshowDelay = 500, AutoPopDelay = 30000 };
+    readonly ToolTip tips = Ui.Tips(new() { InitialDelay = 1000, ReshowDelay = 500, AutoPopDelay = 30000 });
     readonly Panel content = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Ui.Window };
     readonly CheckBox music = Check("Проигрывать с музыкой");
     readonly TrackBar volume = new() { Minimum = 0, Maximum = 100, SmallChange = 5, LargeChange = 10, TickStyle = TickStyle.None, AutoSize = false, BackColor = Ui.Surface };
     readonly Label volumeText = Ui.Caption("");
     readonly Dictionary<string, (HotkeyBox Box, Label Status)> hotkeys = [];
     // Result of the "taken combinations" check: a wrapped label that scrolls when the list is long.
-    readonly Panel takenBox = new() { AutoScroll = true, BackColor = Color.FromArgb(246, 248, 249) };
-    readonly Label taken = new() { AutoSize = true, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Color.FromArgb(246, 248, 249), UseMnemonic = false, Location = new Point(Ui.S(8), Ui.S(6)) };
+    readonly Panel takenBox = new() { AutoScroll = true, BackColor = Ui.Field };
+    readonly Label taken = new() { AutoSize = true, Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Field, UseMnemonic = false, Location = new Point(Ui.S(8), Ui.S(6)) };
     readonly Dictionary<string, string> notes = [];
     readonly Label optimizerStatus = new() { Font = Ui.Small, ForeColor = Ui.Text, BackColor = Ui.Surface, AutoSize = false, UseMnemonic = false };
     int y;
@@ -22,10 +22,13 @@ internal sealed class SettingsForm : Form
     static int CardWidth => Ui.S(600);
     // "Отключить и выйти" was pressed: the main window exits once this window is closed.
     public bool ExitRequested { get; private set; }
+    // Another theme was chosen and a restart accepted: the main window restarts Wallsets once this one is closed.
+    public bool RestartRequested { get; private set; }
     AreaFrame? frame;
 
     public SettingsForm(MainForm main)
     {
+        Ui.Dress(this);
         this.main = main; settings = main.Settings;
         Text = "Настройки · Wallsets"; Icon = main.Icon; Font = Ui.Body; BackColor = Ui.Window; ForeColor = Ui.Text;
         AutoScaleMode = AutoScaleMode.None; StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false;
@@ -50,7 +53,7 @@ internal sealed class SettingsForm : Form
         AcceptButton = done; CancelButton = done;
 
         y = Ui.S(16);
-        Startup(); Preview(); Scaling(); WallpaperArea(); Sound(); Performance(); Energy(); Shortcuts(); Hotkeys(); Quit();
+        Startup(); Theme(); Preview(); Scaling(); WallpaperArea(); Sound(); Performance(); Energy(); Shortcuts(); Hotkeys(); Quit();
         content.Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(1, Ui.S(4)), BackColor = Ui.Window });
 
         main.StateChanged += SyncSound; main.StateChanged += SyncOptimizer;
@@ -145,6 +148,25 @@ internal sealed class SettingsForm : Form
     }
 
     // ---- sections ----
+    void Theme()
+    {
+        var s = Begin("Оформление");
+        (string Theme, string Title, string Hint)[] themes =
+        [
+            ("system", "Как в Windows", "Светлая или тёмная — как выбран режим приложений в параметрах Windows (Персонализация → Цвета)."),
+            ("light", "Светлая", "Светлые окна Wallsets."),
+            ("dark", "Тёмная", "Тёмные окна, меню и подсказки Wallsets: графитовые тона с бирюзовым акцентом."),
+        ];
+        Choice(s, themes.Select(t => (t.Title, t.Hint)).ToArray(), Math.Max(0, Array.FindIndex(themes, t => t.Theme == settings.Theme)), i =>
+        {
+            main.SetTheme(themes[i].Theme);
+            // The windows are built in their colors, so a new theme needs a fresh start of Wallsets.
+            if (Ui.WantsDark(themes[i].Theme) == Ui.Dark) return;
+            if (MessageBox.Show(this, "Тема применится после перезапуска Wallsets. Перезапустить сейчас? Обои на пару секунд остановятся.", "Оформление", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            RestartRequested = true; Close();
+        });
+        End(s);
+    }
     void Preview()
     {
         var s = Begin("Превью в очереди");
@@ -426,7 +448,7 @@ internal sealed class SettingsForm : Form
         {
             var row = new Panel { Size = new Size(s.Width, Ui.S(34)), BackColor = Ui.Surface };
             var label = Ui.Caption(title); label.Location = new Point(0, (row.Height - label.PreferredHeight) / 2);
-            var box = new HotkeyBox { Font = Ui.Body, Bounds = new Rectangle(Ui.S(180), Ui.S(2), Ui.S(200), Ui.S(30)), BackColor = Color.FromArgb(246, 248, 249), BorderStyle = BorderStyle.FixedSingle };
+            var box = new HotkeyBox { Font = Ui.Body, Bounds = new Rectangle(Ui.S(180), Ui.S(2), Ui.S(200), Ui.S(30)), BackColor = Ui.Field, ForeColor = Ui.Text, BorderStyle = BorderStyle.FixedSingle };
             var status = new Label { Font = Ui.Small, BackColor = Ui.Surface, AutoSize = false, AutoEllipsis = true, UseMnemonic = false, Bounds = new Rectangle(Ui.S(392), 0, s.Width - Ui.S(392), row.Height), TextAlign = ContentAlignment.MiddleLeft };
             box.Enter += (_, _) => { main.SuspendHotkeys(); notes.Remove(id); box.Text = "Нажмите сочетание…"; };
             box.Leave += (_, _) => { main.RegisterHotkeys(); RefreshHotkeys(); };

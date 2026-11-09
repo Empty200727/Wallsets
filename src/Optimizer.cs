@@ -25,6 +25,9 @@ internal sealed class Optimizer : IDisposable
         public bool Failed { get; set; }
         // The encoder (and Revision) that could not make the copy; another encoder tries again.
         public string? FailedWith { get; set; }
+        // The graphics card could not decode it (the player decoded it on the processor): an H.264 copy is made
+        // even when its size and frame rate need none.
+        public bool Software { get; set; }
     }
     // A video as the optimizer sees it, for the window that lists them.
     public enum State { Unknown, Light, Kept, Waiting, Working, Ready, Failed }
@@ -99,6 +102,18 @@ internal sealed class Optimizer : IDisposable
     public int MaxFps { get => maxFps; set { maxFps = value; Restart(); } }
     // All wallpaper files, the ones that play soonest first.
     public void Update(List<string> paths) { lock (sync) files = paths; wake.Release(); }
+    // The player decoded this video on the processor: from now on it gets a copy in H.264, which every graphics
+    // card decodes.
+    public void SoftwareDecoded(string path)
+    {
+        if (!Videos.Contains(Path.GetExtension(path)) || SourceKey(path) is not { } key) return;
+        lock (sync)
+        {
+            if (!index.TryGetValue(key, out var probe) || probe.Software) return;
+            probe.Software = true; SaveIndex();
+        }
+        wake.Release();
+    }
     // Settings changed: the copy being made may be the wrong one, so it is dropped and the list is checked again.
     public void Restart() { lock (sync) pass?.Cancel(); wake.Release(); }
 
@@ -117,7 +132,7 @@ internal sealed class Optimizer : IDisposable
         Probe? probe;
         lock (sync) index.TryGetValue(key, out probe);
         if (probe == null || probe.Keep || probe.Failed && !evenFailed) return null;
-        if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, limit ?? maxFps) is not { } p) return null;
+        if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, limit ?? maxFps, probe.Software) is not { } p) return null;
         plan = p;
         return CopyName(key, p);
     }
@@ -151,7 +166,7 @@ internal sealed class Optimizer : IDisposable
                 changed = true;
             }
             foreach (var limit in Settings.FpsLimits)
-                if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, limit) is { } plan
+                if (PlanFor(probe.Width, probe.Height, probe.Fps, Screen.PrimaryScreen!.Bounds.Size, limit, probe.Software) is { } plan
                     && CopyName(old, plan) is var from && File.Exists(from) && CopyName(key, plan) is var to && !File.Exists(to))
                     try { File.Move(from, to); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
@@ -159,14 +174,14 @@ internal sealed class Optimizer : IDisposable
     }
     // The copy still covers the whole screen in every scaling mode (the larger of the two scale factors), so
     // nothing is lost on screen. A video that is less than about 10% larger than needed keeps its size.
-    public static Plan? PlanFor(int width, int height, double fps, Size screen, int maxFps)
+    public static Plan? PlanFor(int width, int height, double fps, Size screen, int maxFps, bool reencode = false)
     {
         if (width <= 0 || height <= 0 || screen.Width <= 0 || screen.Height <= 0) return null;
         double scale = Math.Max((double)screen.Width / width, (double)screen.Height / height);
         int w = width, h = height;
         if (scale < 0.9) { w = Even(width * scale); h = Even(height * scale); }
         int step = Player.FrameStep(fps, maxFps);
-        return w == width && h == height && step == 1 ? null : new Plan(w, h, step);
+        return w == width && h == height && step == 1 && !reencode ? null : new Plan(w, h, step);
     }
     static int Even(double value) => Math.Max(2, (int)Math.Round(value / 2) * 2);
 

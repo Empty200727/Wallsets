@@ -199,3 +199,22 @@ NOT REPRODUCED: copies of a wallpaper ("Сколько раз в очереди"
 unticked: tested with "По умолчанию", "Вручную" in a combined queue and "Выбранный набор" (each tick and
 untick kept the 10 copies and Counts in settings.json); the tile menu itself cannot be opened under Wine.
 PASS Built-in self-tests under Wine 9.0: 32 checks (new: a renamed file keeps its content key).
+
+Update 2026-11-09: saved-queue numbers, copy deletion, start with Windows
+- Saved queues keep how many times each wallpaper is in them (Counts, also derived for queues saved before).
+  PASS under Wine: a1 has 10 copies in its set and 3 in the saved queue "Моя": the saved order gives 3,
+  "Вручную" gives 10, picked back and forth in the "Порядок" list of the running window.
+  NOT CHECKED under Wine: typing a name into the "Сохранить очередь" dialog (keys do not reach Wine's
+  dialog); the counting it uses is the self-tested Library.CountsOf.
+- "Удалить копии" asks first (number of copies and size) and deletes only the copies of the chosen frame
+  rate. PASS under Wine: 8 copies, 7 for "До 30" deleted after "Yes", the one for 60 fps stayed,
+  optimization switched off.
+- Why 25 / 26 / 42 videos: 25 of the 42 are larger than a 1920x1080 screen (copy at any limit); at 30 one
+  more (1920x1080 at 60 fps); at 15 every video is faster than the limit (24, 30 or 60 fps).
+- Start with Windows: the tick now follows every entry Task Manager shows for any Wallsets.exe (Run values
+  of the user and of all users, shortcuts in the Startup folders) instead of only an exact command for this
+  exe; untick removes them all, tick keeps one for this exe. PASS under Wine: a Run value for
+  C:\Old\Wallsets.exe and a Startup-folder shortcut to C:\Old2\Wallsets.exe show the tick with "Запускается
+  Wallsets из другой папки"; untick removed both; tick wrote this exe; a StartupApproved mark 03 shows
+  "Отключено в диспетчере задач".
+PASS Built-in self-tests under Wine 9.0: 34 checks (new: Run commands of any Wallsets.exe, saved-queue numbers).

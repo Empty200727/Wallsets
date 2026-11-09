@@ -114,49 +114,103 @@ internal static class Desktop
 
     // ---- Start with Windows ----
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    const string ApprovedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    const string ApprovedRun = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    const string ApprovedFolder = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder";
     const string RunValue = "Wallsets";
     static string StartCommand => "\"" + Exe + "\" --tray";
     public enum StartState { Off, On, DisabledInTaskManager }
-    // The entry is looked for in the user's startup list and in the all-users list (used when the
-    // user's list could not be written). Task Manager's "Disable" marks the entry in StartupApproved:
-    // an odd first byte means switched off.
-    public static StartState Autostart
+    // One way Windows starts a Wallsets.exe at sign-in, as Task Manager lists it on "Startup apps": a value of the
+    // Run key of the user or of all users, or a shortcut in the user's or the common Startup folder. Path is the
+    // program it starts; Enabled is false when Task Manager switched it off (an odd first byte in StartupApproved).
+    public sealed record StartEntry(bool AllUsers, string? Value, string? Shortcut, string Path, bool Enabled)
     {
-        get
-        {
-            foreach (var hive in new[] { Registry.CurrentUser, Registry.LocalMachine })
-            {
-                using var run = hive.OpenSubKey(RunKey);
-                if (!string.Equals(run?.GetValue(RunValue) as string, StartCommand, StringComparison.OrdinalIgnoreCase)) continue;
-                using var approved = hive.OpenSubKey(ApprovedKey);
-                return approved?.GetValue(RunValue) is byte[] { Length: > 0 } flags && (flags[0] & 1) == 1 ? StartState.DisabledInTaskManager : StartState.On;
-            }
-            return StartState.Off;
-        }
+        public bool Ours => string.Equals(System.IO.Path.GetFullPath(Path), System.IO.Path.GetFullPath(Exe), StringComparison.OrdinalIgnoreCase);
     }
-    // Writes or removes the startup entry; clearing the Task Manager mark makes "on" really on.
+    public static List<StartEntry> StartEntries()
+    {
+        var result = new List<StartEntry>();
+        foreach (var (hive, allUsers) in new[] { (Registry.CurrentUser, false), (Registry.LocalMachine, true) })
+        {
+            using var run = hive.OpenSubKey(RunKey);
+            using var approved = hive.OpenSubKey(ApprovedRun);
+            foreach (var name in run?.GetValueNames() ?? [])
+                if (ProgramOf(run!.GetValue(name) as string) is { } program)
+                    result.Add(new(allUsers, name, null, program, !Disabled(approved, name)));
+        }
+        foreach (var (folder, allUsers) in new[] { (Environment.SpecialFolder.Startup, false), (Environment.SpecialFolder.CommonStartup, true) })
+        {
+            var dir = Environment.GetFolderPath(folder);
+            if (dir.Length == 0 || !Directory.Exists(dir)) continue;
+            using var approved = (allUsers ? Registry.LocalMachine : Registry.CurrentUser).OpenSubKey(ApprovedFolder);
+            foreach (var link in Directory.EnumerateFiles(dir, "*.lnk"))
+                if (ShortcutTarget(link) is { } target && IsWallsets(target))
+                    result.Add(new(allUsers, null, link, target, !Disabled(approved, System.IO.Path.GetFileName(link))));
+        }
+        return result;
+    }
+    static bool Disabled(RegistryKey? approved, string name) => approved?.GetValue(name) is byte[] { Length: > 0 } flags && (flags[0] & 1) == 1;
+    static bool IsWallsets(string path) => string.Equals(System.IO.Path.GetFileName(path), "Wallsets.exe", StringComparison.OrdinalIgnoreCase);
+    // The program of a Run command: quoted, or everything up to ".exe".
+    internal static string? ProgramOf(string? command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return null;
+        command = Environment.ExpandEnvironmentVariables(command.Trim());
+        string path;
+        if (command.StartsWith('"')) { int end = command.IndexOf('"', 1); path = end > 0 ? command[1..end] : command[1..]; }
+        else { int end = command.IndexOf(".exe", StringComparison.OrdinalIgnoreCase); path = end > 0 ? command[..(end + 4)] : command; }
+        return IsWallsets(path) ? path : null;
+    }
+    static string? ShortcutTarget(string link)
+    {
+        var shell = (IShellLinkW)new ShellLink();
+        try
+        {
+            ((IPersistFile)shell).Load(link, 0);
+            var path = new StringBuilder(1024);
+            shell.GetPath(path, path.Capacity, IntPtr.Zero, 0);
+            return path.Length > 0 ? path.ToString() : null;
+        }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException) { return null; }
+        finally { Marshal.ReleaseComObject(shell); }
+    }
+    // On while any entry is on (Windows will start Wallsets), whatever folder the program is in.
+    public static StartState Autostart => StateOf(StartEntries());
+    public static StartState StateOf(List<StartEntry> entries) => entries.Any(e => e.Enabled) ? Desktop.StartState.On : entries.Count > 0 ? Desktop.StartState.DisabledInTaskManager : Desktop.StartState.Off;
+    // Removes every entry of the user or of all users that starts a Wallsets.exe and, when on, writes the one for
+    // this program, with Task Manager's mark cleared, so exactly what the checkbox shows happens at sign-in.
     public static void WriteAutostart(RegistryKey hive, bool on)
     {
-        using (var run = hive.CreateSubKey(RunKey))
+        bool allUsers = hive == Registry.LocalMachine;
+        foreach (var entry in StartEntries().Where(e => e.AllUsers == allUsers))
         {
-            if (on) run.SetValue(RunValue, StartCommand);
-            else run.DeleteValue(RunValue, false);
+            if (entry.Value != null)
+            {
+                using (var run = hive.OpenSubKey(RunKey, true)) run?.DeleteValue(entry.Value, false);
+                using var approved = hive.OpenSubKey(ApprovedRun, true);
+                approved?.DeleteValue(entry.Value, false);
+            }
+            else if (entry.Shortcut != null)
+            {
+                File.Delete(entry.Shortcut);
+                using var approved = hive.OpenSubKey(ApprovedFolder, true);
+                approved?.DeleteValue(System.IO.Path.GetFileName(entry.Shortcut), false);
+            }
         }
-        using var approved = hive.OpenSubKey(ApprovedKey, true);
-        approved?.DeleteValue(RunValue, false);
+        if (!on) return;
+        using (var run = hive.CreateSubKey(RunKey)) run.SetValue(RunValue, StartCommand);
+        using var mark = hive.OpenSubKey(ApprovedRun, true);
+        mark?.DeleteValue(RunValue, false);
     }
-    // Turns start with Windows on or off. Normally no rights are needed (the user's own list);
-    // if that list is locked, Windows asks for administrator rights and the all-users list is used.
+    // Turns start with Windows on or off. Normally no rights are needed (the user's own list); entries for all
+    // users, or a locked user's list, need administrator rights, which Windows asks for.
     public static void SetAutostart(bool on)
     {
-        bool inAllUsers;
-        using (var run = Registry.LocalMachine.OpenSubKey(RunKey)) inAllUsers = run?.GetValue(RunValue) != null;
+        bool allUsers = StartEntries().Any(e => e.AllUsers);
         try
         {
             WriteAutostart(Registry.CurrentUser, on);
-            // An all-users entry (made earlier with administrator rights) has to go as well.
-            if (!on && inAllUsers) Elevated("--autostart-off");
+            // An entry for all users (made with administrator rights, or by hand) has to go as well.
+            if (allUsers) Elevated("--autostart-off");
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
         {

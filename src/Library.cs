@@ -31,6 +31,9 @@ public sealed class SavedQueue
     public string Name { get; set; } = "";
     public List<string> Sets { get; set; } = [];
     public List<string> Order { get; set; } = [];
+    // File key -> how many times it is in this queue: chosen in "Порядок", the saved queue brings its own numbers
+    // back instead of those of the sets. Files saved later than the queue use their set's number.
+    public Dictionary<string, int>? Counts { get; set; }
 }
 
 // Part of the primary screen for the wallpaper, in pixels from the screen's top left corner.
@@ -106,7 +109,12 @@ public sealed class Settings
             s.Sets ??= new(StringComparer.OrdinalIgnoreCase);
             s.Combinations ??= new();
             s.Queues = (s.Queues ?? []).Where(q => q != null && !string.IsNullOrEmpty(q.Id)).ToList();
-            foreach (var q in s.Queues) { q.Name ??= ""; q.Sets ??= []; q.Order ??= []; }
+            foreach (var q in s.Queues)
+            {
+                q.Name ??= ""; q.Sets ??= []; q.Order ??= [];
+                // Queues saved before they kept numbers: as many times as the file is in their order.
+                q.Counts ??= Library.CountsOf(q.Order);
+            }
             foreach (var options in new[] { s.Sets, s.Combinations })
                 foreach (var (key, o) in options.ToList())
                 {
@@ -248,6 +256,9 @@ public static class Library
         }
         return result;
     }
+    // How many times each key is in an order: the numbers of copies a saved queue keeps.
+    public static Dictionary<string, int> CountsOf(IEnumerable<string> order) =>
+        order.GroupBy(k => k, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
     // Inserts copies of the key right after position index.
     public static List<string> InsertCopies(List<string> order, int index, string key, int copies)
     {

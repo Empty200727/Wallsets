@@ -85,6 +85,11 @@ internal static class SelfTests
             bool otherContents = Fingerprints.Compute(renamed, new FileInfo(renamed).Length) != before;
             File.Delete(renamed);
             Check(sameAfterRename && otherContents, "A video is known by its contents: a renamed file keeps its key, other contents get another");
+            var numbers = Library.CountsOf(["s/b", "s/a", "s/a", "S/A", "s/c"]);
+            Check(numbers["s/a"] == 3 && numbers["s/b"] == 1 && numbers.Count == 3, "A saved queue keeps how many times each wallpaper is in it");
+            Check(Desktop.ProgramOf("\"E:\\Обои\\Wallsets\\Wallsets.exe\" --tray") == "E:\\Обои\\Wallsets\\Wallsets.exe" && Desktop.ProgramOf("C:\\Old\\WALLSETS.EXE --tray") == "C:\\Old\\WALLSETS.EXE"
+                && Desktop.ProgramOf("\"C:\\Program Files\\Other\\other.exe\" -x") == null && Desktop.ProgramOf("") == null,
+                "Start with Windows: entries of any Wallsets.exe are found, other programs are not");
             Check(Optimizer.DriverFrom("[e][ffmpeg] h264_nvenc: The minimum required Nvidia driver for nvenc is 610.00 or newer") == "610.00" && Optimizer.DriverFrom("[e][ffmpeg] h264_nvenc: Cannot load nvcuda.dll") == null,
                 "The NVIDIA driver version NVENC asks for is read from mpv's log");
             var square = new Rectangle(0, 0, 1000, 1000);

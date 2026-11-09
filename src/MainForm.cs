@@ -338,12 +338,15 @@ internal sealed class MainForm : Form
         settings.Optimize = optimizer.Enabled = on; Save();
         Run(Reapply);
     }
-    // Copies are deleted with optimization switched off, or they would be made again right away.
+    // Copies of the current frame-rate limit are deleted with optimization switched off, or they would be made
+    // again right away; copies of the other limits stay for when it is switched on with another limit.
     internal void ClearOptimized()
     {
         settings.Optimize = optimizer.Enabled = false; Save();
-        Run(async () => { await Reapply(); optimizer.Clear(); });
+        int limit = settings.MaxFps;
+        Run(async () => { await Reapply(); optimizer.Delete(limit); });
     }
+    internal List<string> OptimizedCopies => optimizer.CopiesFor(settings.MaxFps);
     internal string OptimizerStatus => optimizer.Status;
     internal List<Optimizer.Item> OptimizerItems => optimizer.Items();
     internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
@@ -409,7 +412,11 @@ internal sealed class MainForm : Form
         o.Fixed ??= [.. o.Sound];
         return o;
     }
-    int CountOf(MediaFile file) => Options(file.SetId).Counts.TryGetValue(file.FileId, out var n) ? Math.Clamp(n, 1, MaxCopies) : 1;
+    // How many times a file is in the queue: the number kept by the saved queue chosen in "Порядок", otherwise the
+    // number of its set, which stays when sets are ticked or unticked.
+    int CountOf(MediaFile file) =>
+        Saved(ViewOptions)?.Counts is { } saved && saved.TryGetValue(file.Key, out var kept) ? Math.Clamp(kept, 1, MaxCopies)
+        : Options(file.SetId).Counts.TryGetValue(file.FileId, out var n) ? Math.Clamp(n, 1, MaxCopies) : 1;
     // The sound switch in the player bar turns the sound of every wallpaper on or off; a wallpaper can be switched
     // on its own until the next press, or fixed so that the switch leaves it alone (see SetOptions).
     bool SoundFor(MediaFile? file) => file == null ? settings.Music : Library.SoundOf(Options(file.SetId), file.FileId, settings.Music);
@@ -674,6 +681,8 @@ internal sealed class MainForm : Form
         var saved = existing ?? new SavedQueue { Sets = ActiveSets.Select(s => s.Id).ToList() };
         if (existing == null) settings.Queues.Add(saved);
         saved.Name = name; saved.Order = KeysOf(files.Items);
+        // The numbers of copies as they are now come back whenever this queue is chosen.
+        saved.Counts = Library.CountsOf(saved.Order);
         options.Sort = "saved:" + saved.Id;
         Save(); Run(Rebuild);
     }
@@ -783,7 +792,10 @@ internal sealed class MainForm : Form
                 if (Saved(options) is { } saved) saved.Order = order; else options.Order = order;
             }
         }
-        if (value == 1) options.Counts.Remove(file.FileId); else options.Counts[file.FileId] = value;
+        // Under a saved queue the number is the queue's own; the set keeps its number for the other orders.
+        if (Saved(view) is { } chosen) (chosen.Counts ??= new(StringComparer.OrdinalIgnoreCase))[file.Key] = value;
+        else if (value == 1) options.Counts.Remove(file.FileId);
+        else options.Counts[file.FileId] = value;
         Save(); Run(Rebuild);
     }
     void SetFileSound(MediaFile file, bool on)

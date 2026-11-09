@@ -296,10 +296,19 @@ internal sealed class SettingsForm : Form
         s.Add(optimizerStatus, Indent, gap: 6);
         var clear = Ui.TextButton("Удалить копии", () =>
         {
+            int fps = settings.MaxFps;
+            var limit = fps > 0 ? $"«До {fps} кадров в секунду»" : "«Как в видео»";
+            var copies = main.OptimizedCopies;
+            if (copies.Count == 0) { MessageBox.Show(this, $"Для частоты {limit} облегчённых копий нет.", "Удалить копии", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            long bytes = copies.Sum(f => { try { return new FileInfo(f).Length; } catch (IOException) { return 0L; } });
+            var size = bytes >= 1L << 30 ? (bytes / (double)(1L << 30)).ToString("0.0", System.Globalization.CultureInfo.GetCultureInfo("ru-RU")) + " ГБ" : (bytes >> 20) + " МБ";
+            var text = $"Удалить облегчённые копии для частоты {limit}?\n\nБудет удалено копий: {copies.Count} ({size}). Копии для других частот останутся " +
+                "(кроме общих: у видео не чаще этой частоты одна копия на несколько частот).\n\nОблегчение выключится, чтобы копии не делались заново; все видео будут играть как есть, пока его снова не включить.";
+            if (MessageBox.Show(this, text, "Удалить копии", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             main.ClearOptimized();
             updating = true; optimize.Checked = false; updating = false;
         });
-        tips.SetToolTip(clear, "Удаляет облегчённые копии и выключает облегчение: все видео играют как есть.");
+        tips.SetToolTip(clear, Wrap("Удаляет облегчённые копии для выбранной частоты кадров (сначала спросит) и выключает облегчение. Копии для других частот остаются."));
         var list = Ui.TextButton("Показать облегчённые и необлегчённые видео", () =>
         {
             if (OwnedForms.OfType<OptimizerForm>().FirstOrDefault() is { } open) { open.Activate(); return; }
@@ -346,14 +355,23 @@ internal sealed class SettingsForm : Form
         s.Add(open, Indent, gap: 12);
         var frame = s.Add(Check("Сразу показывать обои при включении"), gap: 4);
         s.Hint("При выключении компьютера последний кадр обоев ставится фоном Windows. После включения сразу видна та же картинка вместо фона Windows, а через несколько секунд она оживает. «Отключить и выйти» возвращает ваш прежний фон Windows.");
+        // The same entries as Task Manager's "Startup apps": the tick is on whenever Windows will start Wallsets.
         void Show()
         {
-            var current = Desktop.StartState.Off;
-            try { current = Desktop.Autostart; } catch (Exception ex) { Program.Log(ex); }
+            List<Desktop.StartEntry> entries = [];
+            try { entries = Desktop.StartEntries(); } catch (Exception ex) { Program.Log(ex); }
+            var current = Desktop.StateOf(entries);
             updating = true; autostart.Checked = current == Desktop.StartState.On; updating = false;
             var (text, tip) = current switch { Desktop.StartState.On => texts[0], Desktop.StartState.DisabledInTaskManager => texts[2], _ => texts[1] };
+            // Another copy of Wallsets (an older folder) starts instead of this one.
+            var other = entries.FirstOrDefault(e => e.Enabled && !e.Ours);
+            if (current == Desktop.StartState.On && other != null && !entries.Any(e => e.Enabled && e.Ours))
+            {
+                text = "Запускается Wallsets из другой папки — снимите и поставьте галочку, чтобы запускался этот";
+                tip = $"При входе в Windows запускается {other.Path}" + (other.Shortcut != null ? $" (ярлык {other.Shortcut})" : "") + ". Снимите галочку, чтобы он не запускался, и поставьте снова — тогда будет запускаться этот Wallsets.";
+            }
             state.Text = text; tips.SetToolTip(autostart, Wrap(tip)); tips.SetToolTip(state, Wrap(tip));
-            state.ForeColor = current == Desktop.StartState.DisabledInTaskManager ? Ui.Warning : Ui.Muted;
+            state.ForeColor = current == Desktop.StartState.DisabledInTaskManager || text != texts[0].State && current == Desktop.StartState.On ? Ui.Warning : Ui.Muted;
         }
         Show();
         // Re-read after coming back from Task Manager, where it can be switched too.

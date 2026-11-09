@@ -501,11 +501,23 @@ internal sealed class Optimizer : IDisposable
     void Say(string text) { Status = text; Changed?.Invoke(); }
 
     // Deletes every copy and what is known about the files. A copy that still plays is deleted on the next pass.
-    public void Clear()
+    // The copies made for one frame-rate limit. A video that is not faster than the limit has the same copy for it
+    // and for the higher limits (a 30 fps 4K video: one copy for "До 30", "До 60" and "Как в видео").
+    public List<string> CopiesFor(int limit)
     {
-        lock (sync) { pass?.Cancel(); index.Clear(); SaveIndex(); }
-        foreach (var file in OwnFiles()) try { File.Delete(file); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        Say(enabled ? "Копии удалены." : "Копии удалены. " + Off);
+        List<string> list;
+        lock (sync) list = files;
+        return list.Where(f => Videos.Contains(Path.GetExtension(f))).Select(f => CopyFor(f, out _, limit: limit))
+            .OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).Where(File.Exists).ToList();
+    }
+    // Deletes the copies of one limit; those of the other limits stay. A copy that still plays goes on a later pass.
+    public void Delete(int limit)
+    {
+        lock (sync) pass?.Cancel();
+        int deleted = 0;
+        foreach (var file in CopiesFor(limit))
+            try { File.Delete(file); deleted++; } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        Say($"Удалено копий: {deleted}." + (enabled ? "" : " " + Off));
     }
     public void Dispose()
     {

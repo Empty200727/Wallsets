@@ -51,9 +51,11 @@ internal sealed class Optimizer : IDisposable
         ("Windows (видеокарта)", "h264_mf", "hw_encoding=1,rate_control=u_vbr", true),
         ("Windows (процессор)", "h264_mf", "hw_encoding=0,rate_control=u_vbr", true),
     ];
-    // About 0.08 bit per pixel of every frame kept: generous for an encoder of a graphics card at screen size.
+    // About 0.12 bit per pixel of every frame kept. The copy keeps the original's crisp one-pixel outlines (see
+    // ScaleGraph), which take more bits than a softened picture, and the encoders of graphics cards and Windows
+    // need more bits than a software encoder for the same picture.
     public static long BitrateFor(Plan plan, double fps) =>
-        Math.Max(2_000_000L, (long)(plan.Width * (double)plan.Height * (fps > 0 ? fps / plan.Step : 30) * 0.08));
+        Math.Max(2_000_000L, (long)Math.Round(plan.Width * (double)plan.Height * (fps > 0 ? fps / plan.Step : 30) * 0.12));
     // Only these files are ever deleted, even when the folder falls back to the shared temporary folder.
     static readonly Regex Own = new(@"^[0-9A-F]{32}(\.test)?\.mp4(\.part|\.log)?$");
     static readonly Regex Noise = new(@"\]\[vd\]|AVHW|hwaccel|no frame!");
@@ -61,7 +63,8 @@ internal sealed class Optimizer : IDisposable
     const string Off = "Выключено: все видео играют как есть.";
     const long MinimumFree = 2L << 30;
     // Changes of the way copies are made: failures of an older way are tried again. 2: copies without sound.
-    const string Revision = "#2";
+    // 3: scaled the way the player draws the original.
+    const string Revision = "#3";
     // A copy whose video is gone is deleted only after this time, so cutting a video and pasting it into
     // another set (or renaming it) does not lose its copy.
     static readonly TimeSpan OrphanGrace = TimeSpan.FromMinutes(10);
@@ -145,8 +148,9 @@ internal sealed class Optimizer : IDisposable
         plan = p;
         return CopyName(key, p);
     }
-    // CopyVersion: copies of an older way of making them are made again (2: sharper scaling, enough bitrate).
-    const string CopyVersion = "2";
+    // CopyVersion: copies of an older way of making them are made again (2: lanczos scaling, enough bitrate;
+    // 3: scaled the way the player draws the original, 0.12 bit per pixel).
+    const string CopyVersion = "3";
     string CopyName(string key, Plan plan) =>
         Path.Combine(folder, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{key}|{plan.Width}x{plan.Height}|{plan.Step}|{CopyVersion}")))[..32] + ".mp4");
     // The original's colours for the player to show its copy with, or null.
@@ -338,10 +342,10 @@ internal sealed class Optimizer : IDisposable
             if (await Encode(path, test, plan, codec, true, null, token)) { encoder = codec; return true; }
         return false;
     }
-    double FpsOf(string path)
+    Probe? ProbeOf(string path)
     {
-        if (SourceKey(path) is not { } key) return 0;
-        lock (sync) return index.TryGetValue(key, out var probe) ? probe.Fps : 0;
+        if (SourceKey(path) is not { } key) return null;
+        lock (sync) return index.TryGetValue(key, out var probe) ? probe : null;
     }
     // A file that failed with an encoder other than the one found now.
     bool Retry(string path)
@@ -410,18 +414,31 @@ internal sealed class Optimizer : IDisposable
         }
         finally { Kill(process); }
     }
+    // The copy gets exactly the pixels the player would draw from the original. The player (mpv, profile "fast")
+    // shrinks a video with the graphics card's two-tap bilinear sampling and no anti-aliasing: a thin outline keeps
+    // its full darkness and colour, with small steps on slopes. A smoothing filter (lanczos, bicubic) mixes outlines
+    // with their surroundings instead, so the copy looked blurred, greyer and duller, the more so the smaller the
+    // screen. FFmpeg's fast_bilinear is the same two-tap filter, but its quick 8-bit path samples half a pixel off
+    // and on smaller screens falls on every n-th source pixel only; with a 16-bit result it takes the centred filter
+    // the graphics card samples with (checked against the card's sampling: at most 1 level apart), and the result
+    // is rounded to 8 bits without dither noise. A copy of the original size is not scaled at all.
+    internal static string ScaleGraph(Plan plan, bool resize) =>
+        string.Join(",", new[]
+        {
+            plan.Step > 1 ? $"framestep={plan.Step}" : "",
+            resize ? $"scale={plan.Width}:{plan.Height}:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none,format=yuv420p" : "",
+        }.Where(part => part.Length > 0));
     // Encoding mode of mpv: the graphics card decodes, every n-th frame is kept and scaled, the encoder writes
     // an MP4 next to the final name, which it gets only when it is complete. A test encodes 1 second.
     async Task<bool> Encode(string path, string output, Plan plan, int codec, bool test, Action<int>? progress, CancellationToken token)
     {
         var part = output + ".part";
         var pipe = $"wallsets-encode-{Environment.ProcessId}-{Interlocked.Increment(ref requests)}";
-        // Lanczos keeps thin dark outlines dark and sharp; the filtering avoids the jagged steps of the quick
-        // scaling the player does on the fly. Full chroma precision keeps colours clean at their edges.
-        var graph = (plan.Step > 1 ? $"framestep={plan.Step}," : "") + $"scale={plan.Width}:{plan.Height}:flags=lanczos+accurate_rnd+full_chroma_int";
+        var probe = ProbeOf(path);
+        var graph = ScaleGraph(plan, probe == null || probe.Width != plan.Width || probe.Height != plan.Height);
         // Only the picture: the player takes the sound from the original file. It also avoids an mpv 0.41 hang when
         // a soundtrack starts a little after the picture.
-        var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--aid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options + (Encoders[codec].Bitrate ? ",b=" + BitrateFor(plan, FpsOf(path)) : ""), "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
+        var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--aid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options + (Encoders[codec].Bitrate ? ",b=" + BitrateFor(plan, probe?.Fps ?? 0) : ""), "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
         // A test keeps mpv's log: the reason an encoder does not work goes to errors.log.
         var log = output + ".log";
         if (test) { args.Add("--length=1"); args.Add("--log-file=" + log); }

@@ -254,3 +254,23 @@ PASS test build under Wine: colours of every video recorded (bt.709:limited:bt.7
 8 copies made again under version 2.
 PASS Built-in self-tests under Wine 9.0: 35 checks (new: bitrate for encoders that need one).
 NOT CHECKED: Media Foundation and NVENC output on real hardware.
+
+Update 2026-11-10 (2): copies still blurred and duller than the original (same 3840x2160 60 fps video);
+the user: "in the original the outline is stepped and blacker, the smaller the screen the clearer"
+Findings (frames of the user's video; the player's drawing emulated as mpv --profile=fast does it: YUV->RGB at
+source size, then the card's 2-tap bilinear sampling, correct-downscaling=no, linear-downscaling=no):
+- The stepped, darker outlines ARE how the player shows the original; lanczos copies mixed outlines with their
+  surroundings. Luma of a lanczos copy vs the player's picture of the original (bundled mpv 0.41, FFmpeg
+  N-127231): 43.5 dB, up to 46 levels apart on outline pixels. At 1280x720 / 1366x768 the card's sampling is
+  aliased (ratio near 3), at 1920x1080 it is a 2x2 average - which is why smaller screens showed it more.
+- FFmpeg's fast_bilinear with 8-bit output takes swscale's quick horizontal path (left-aligned, no half-pixel
+  centre): 34.8 dB, up to 159 levels apart. With a 16-bit output it takes the centred 2-tap filter: 80.4 dB
+  with sws_dither=none (59.2 dB with the default dither), at most 1 level apart from the card's sampling.
+- Chroma: 2-tap on the chroma plane gives 49.5 dB RGB vs the player's picture, ideal 4:2:0 of that picture
+  48.3 dB - nothing to gain there; 4:2:0 at screen size is the remaining (small) difference.
+- Bitrate (x264 veryfast as a stand-in, 1366x768, 30 fps): exact-sampled copy 46.5 dB at 0.08 bit/pixel,
+  48.0 at 0.12, 49.1 at 0.16; outlines lighter by 0.57 / 0.41 / 0.34 levels.
+Changes: Optimizer.ScaleGraph: framestep, then scale=W:H:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,
+scale=flags=accurate_rnd:sws_dither=none,format=yuv420p; no scaling when the copy keeps the original size;
+0.12 bit per pixel (was 0.08) for encoders that need a bitrate; copy version 3 and failure revision #3.
+PASS bundled mpv 0.41 under Wine (encoding mode, ffv1): the graph is accepted, 1366x768 output as above.

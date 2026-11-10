@@ -67,8 +67,12 @@ internal static class SelfTests
                 && Optimizer.PlanFor(1366, 768, 30, screen, 30) == null && Optimizer.PlanFor(0, 0, 30, screen, 30) == null
                 && Optimizer.PlanFor(1280, 720, 30, screen, 30, reencode: true) == new Optimizer.Plan(1280, 720, 1),
                 "Lighter copies: scaled to cover the screen and to the frame-rate limit; files that are already light get none, unless the graphics card cannot decode them");
-            Check(Optimizer.BitrateFor(new Optimizer.Plan(2560, 1440, 2), 60) == 8_847_360 && Optimizer.BitrateFor(new Optimizer.Plan(1280, 720, 1), 24) == 2_000_000,
-                "Encoders that need a bitrate get about 0.08 bit per pixel of every kept frame, at least 2 Mbit/s");
+            Check(Optimizer.BitrateFor(new Optimizer.Plan(2560, 1440, 2), 60) == 13_271_040 && Optimizer.BitrateFor(new Optimizer.Plan(1366, 768, 2), 60) == 3_776_717
+                && Optimizer.BitrateFor(new Optimizer.Plan(1280, 720, 2), 24) == 2_000_000,
+                "Encoders that need a bitrate get about 0.12 bit per pixel of every kept frame, at least 2 Mbit/s");
+            Check(Optimizer.ScaleGraph(new Optimizer.Plan(1366, 768, 2), true) == "framestep=2,scale=1366:768:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none,format=yuv420p"
+                && Optimizer.ScaleGraph(new Optimizer.Plan(1920, 1080, 2), false) == "framestep=2" && Optimizer.ScaleGraph(new Optimizer.Plan(1280, 720, 1), false) == "",
+                "Copies are scaled with the player's own two-tap sampling (16-bit fast_bilinear, no dither); a copy of the original size is not scaled");
             var box = (string type, int size) => { var b = new byte[size]; System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(b, (uint)size); System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4); return b; };
             var mp4 = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + ".mp4");
             File.WriteAllBytes(mp4, [.. box("ftyp", 24), .. box("moov", 40), .. box("mdat", 100)]);

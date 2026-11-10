@@ -37,9 +37,13 @@ internal sealed class Optimizer : IDisposable
     public readonly record struct Item(string Path, State State, int Percent);
     public readonly record struct Plan(int Width, int Height, int Step);
     static readonly HashSet<string> Videos = new(".mp4 .mkv .webm .mov .avi .m4v .wmv .mpg .mpeg .ts".Split(' '), StringComparer.OrdinalIgnoreCase);
-    // Graphics card encoders first (NVIDIA, AMD, Intel). Media Foundation is the Windows way to the same hardware
-    // (through the graphics driver, so it also works where FFmpeg's NVENC needs a newer driver), and last its
-    // software encoder, which works everywhere but on the processor. Options a driver does not know are skipped.
+    // Graphics card encoders first (NVIDIA, AMD, Intel), each in its constant-quality mode. When none of them works
+    // (FFmpeg's NVENC needs a newer NVIDIA driver than many computers have), x264 in the bundled mpv encodes on the
+    // processor: constant quality (crf), far sharper than the Windows encoders, and it writes the colour tags of the
+    // picture it gets (BT.709, limited range for HD video). Media Foundation (Windows' way to the graphics driver's
+    // encoder, and Windows' own software encoder) stays as the last resort: FFmpeg passes it no colour range or
+    // matrix, so the encoder guesses them, and Windows' software encoder gave copies that were paler as a whole and
+    // soft. Options a driver does not know are skipped.
     // Bitrate: the encoder also gets b= (bits per second, see BitrateFor). Media Foundation always passes a mean
     // bitrate to the driver, FFmpeg's default of 200 kbit/s unless one is set, and a driver without a quality mode
     // encodes with it: copies came out blurred and dull. Quick Sync falls back to it the same way.
@@ -48,6 +52,7 @@ internal sealed class Optimizer : IDisposable
         ("NVIDIA NVENC", "h264_nvenc", "preset=p5,tune=hq,rc=vbr,cq=21,b=0,spatial-aq=1", false),
         ("AMD AMF", "h264_amf", "quality=quality,rc=cqp,qp_i=20,qp_p=22,qp_b=24", false),
         ("Intel Quick Sync", "h264_qsv", "preset=slower,global_quality=21", true),
+        ("x264 (процессор)", "libx264", "preset=faster,crf=16", false),
         ("Windows (видеокарта)", "h264_mf", "hw_encoding=1,rate_control=u_vbr", true),
         ("Windows (процессор)", "h264_mf", "hw_encoding=0,rate_control=u_vbr", true),
     ];
@@ -63,8 +68,8 @@ internal sealed class Optimizer : IDisposable
     const string Off = "Выключено: все видео играют как есть.";
     const long MinimumFree = 2L << 30;
     // Changes of the way copies are made: failures of an older way are tried again. 2: copies without sound.
-    // 3: scaled the way the player draws the original.
-    const string Revision = "#3";
+    // 3: scaled the way the player draws the original. 4: NV12 for every encoder, x264 before Media Foundation.
+    const string Revision = "#4";
     // A copy whose video is gone is deleted only after this time, so cutting a video and pasting it into
     // another set (or renaming it) does not lose its copy.
     static readonly TimeSpan OrphanGrace = TimeSpan.FromMinutes(10);
@@ -149,8 +154,8 @@ internal sealed class Optimizer : IDisposable
         return CopyName(key, p);
     }
     // CopyVersion: copies of an older way of making them are made again (2: lanczos scaling, enough bitrate;
-    // 3: scaled the way the player draws the original, 0.12 bit per pixel).
-    const string CopyVersion = "3";
+    // 3: scaled the way the player draws the original, 0.12 bit per pixel; 4: x264 before Windows' encoders).
+    const string CopyVersion = "4";
     string CopyName(string key, Plan plan) =>
         Path.Combine(folder, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{key}|{plan.Width}x{plan.Height}|{plan.Step}|{CopyVersion}")))[..32] + ".mp4");
     // The original's colours for the player to show its copy with, or null.
@@ -422,11 +427,15 @@ internal sealed class Optimizer : IDisposable
     // and on smaller screens falls on every n-th source pixel only; with a 16-bit result it takes the centred filter
     // the graphics card samples with (checked against the card's sampling: at most 1 level apart), and the result
     // is rounded to 8 bits without dither noise. A copy of the original size is not scaled at all.
+    // The encoder always gets NV12, the one layout every encoder here takes: Media Foundation accepts only the exact
+    // format its encoder offers, and the graphics card's encoder offers NV12 alone (with I420 it ended with "format
+    // negotiation failed" and Windows' software encoder was used instead).
     internal static string ScaleGraph(Plan plan, bool resize) =>
         string.Join(",", new[]
         {
             plan.Step > 1 ? $"framestep={plan.Step}" : "",
-            resize ? $"scale={plan.Width}:{plan.Height}:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none,format=yuv420p" : "",
+            resize ? $"scale={plan.Width}:{plan.Height}:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none" : "",
+            "format=nv12",
         }.Where(part => part.Length > 0));
     // Encoding mode of mpv: the graphics card decodes, every n-th frame is kept and scaled, the encoder writes
     // an MP4 next to the final name, which it gets only when it is complete. A test encodes 1 second.

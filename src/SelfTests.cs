@@ -70,9 +70,14 @@ internal static class SelfTests
             Check(Optimizer.BitrateFor(new Optimizer.Plan(2560, 1440, 2), 60) == 13_271_040 && Optimizer.BitrateFor(new Optimizer.Plan(1366, 768, 2), 60) == 3_776_717
                 && Optimizer.BitrateFor(new Optimizer.Plan(1280, 720, 2), 24) == 2_000_000,
                 "Encoders that need a bitrate get about 0.12 bit per pixel of every kept frame, at least 2 Mbit/s");
-            Check(Optimizer.ScaleGraph(new Optimizer.Plan(1366, 768, 2), true) == "framestep=2,scale=1366:768:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none,format=yuv420p"
-                && Optimizer.ScaleGraph(new Optimizer.Plan(1920, 1080, 2), false) == "framestep=2" && Optimizer.ScaleGraph(new Optimizer.Plan(1280, 720, 1), false) == "",
-                "Copies are scaled with the player's own two-tap sampling (16-bit fast_bilinear, no dither); a copy of the original size is not scaled");
+            Check(Optimizer.ScaleGraph(new Optimizer.Plan(1366, 768, 2), true) == "framestep=2,scale=1366:768:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none,format=nv12"
+                && Optimizer.ScaleGraph(new Optimizer.Plan(1920, 1080, 2), false) == "framestep=2,format=nv12" && Optimizer.ScaleGraph(new Optimizer.Plan(1280, 720, 1), false) == "format=nv12",
+                "Copies are scaled with the player's own two-tap sampling (16-bit fast_bilinear, no dither) and given to the encoder as NV12; a copy of the original size is not scaled");
+            Check(Player.PixelForPixel("fill", true, new Size(2134, 1200), new Size(1920, 1200), false) && Player.PixelForPixel("fill", true, new Size(1366, 768), new Size(1360, 768), false)
+                && Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1920, 1080), false) && !Player.PixelForPixel("fill", false, new Size(3840, 2160), new Size(1920, 1080), false)
+                && !Player.PixelForPixel("fit", true, new Size(2134, 1200), new Size(1920, 1200), false) && !Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1280, 720), true)
+                && !Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(2560, 1440), false) && !Player.PixelForPixel("fill", true, new Size(3840, 2160), new Size(1920, 1080), false),
+                "A copy made for the screen is shown pixel for pixel in fill mode; originals, other modes, areas and copies for another screen are scaled");
             var box = (string type, int size) => { var b = new byte[size]; System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(b, (uint)size); System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4); return b; };
             var mp4 = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + ".mp4");
             File.WriteAllBytes(mp4, [.. box("ftyp", 24), .. box("moov", 40), .. box("mdat", 100)]);

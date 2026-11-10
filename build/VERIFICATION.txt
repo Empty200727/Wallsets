@@ -274,3 +274,29 @@ Changes: Optimizer.ScaleGraph: framestep, then scale=W:H:flags=fast_bilinear+acc
 scale=flags=accurate_rnd:sws_dither=none,format=yuv420p; no scaling when the copy keeps the original size;
 0.12 bit per pixel (was 0.08) for encoders that need a bitrate; copy version 3 and failure revision #3.
 PASS bundled mpv 0.41 under Wine (encoding mode, ffv1): the graph is accepted, 1366x768 output as above.
+
+Update 2026-11-10 (3): "the copy is paler as a whole and outlines blur, nothing changed"
+From the user's errors.log: NVENC (driver older than 610), AMF and Quick Sync fail; "Windows (видеокарта)"
+failed with "h264_mf: format negotiation failed (1/0)", so Windows' software encoder made the copies.
+Findings:
+- FFmpeg's mfenc accepts an input type only when its pixel format equals avctx->pix_fmt exactly; the graph of
+  update (2) ended in yuv420p, which the graphics driver's encoder MFT does not offer (NV12 only). Before it the
+  graph kept the decoder's NV12. mfenc also sets no MF_MT_VIDEO_NOMINAL_RANGE or matrix (checked in FFmpeg
+  master), so Windows' encoders choose range and tags on their own; the user's software-encoded copies were
+  paler as a whole and soft.
+- mpv's fill size (aspect_calc_panscan, mpv master) for a copy is not always the copy's own size: 2134x1200 on
+  1920x1200 is drawn at 2135x1200, 1366x768 on 1360x768 at 1367x768 - the whole picture is resampled.
+  1280x720, 1280x800, 1366x768, 1440x900, 1536x864, 1600x900, 1680x1050, 1920x1080, 2560x1080, 2560x1440,
+  2560x1600 and 3440x1440 were 1:1 already.
+- x264 in the bundled mpv (preset faster, crf 16), local measurements on the exact-sampled 1366x768 copy:
+  47.0 dB luma (crf 16 veryfast), 46.8 (crf 18 faster), 47.1 (crf 18 medium); deblock -1 changes nothing.
+Changes: the graph always ends in format=nv12 (every encoder in the list takes it); encoder order NVENC, AMF,
+Quick Sync, x264 (libx264 preset=faster,crf=16), Media Foundation on the card, Media Foundation on the
+processor; Player.PixelForPixel: a copy made for the screen is shown with video-unscaled in fill mode (outside
+an area); copy version 4, failure revision #4.
+PASS bundled mpv 0.41 under Wine, the optimizer's arguments with --ovc=libx264 --ovcopts=preset=faster,crf=16:
+1366x768 (28 s for 201 frames incl. software 4K decoding), 2134x1200 and an unscaled 3840x2160 copy; High
+profile, color_range tv, colorspace bt709. Against the player's drawing of the original (3 frames): luma
+48.35 dB, outlines 0.33 levels lighter, saturation ratio 0.9994, mean brightness +0.10 (lanczos copy of
+update 1: 42.00 dB, 1.27 levels). The 1-second detection run succeeds.
+NOT CHECKED: Media Foundation with NV12 on real hardware; video-unscaled on the real desktop.

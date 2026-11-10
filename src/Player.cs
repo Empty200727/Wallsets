@@ -29,6 +29,8 @@ internal sealed class Player : IDisposable
     // The file actually playing: the wallpaper itself or its lighter copy.
     public string? Loaded { get; private set; }
     string? Colors;
+    // The loaded file is a lighter copy made for this screen (see PixelForPixel).
+    bool copy;
     // Repeat the file endlessly; off when wallpapers change at the end of each video.
     public bool Loop { get; set; } = true;
     // Part of the screen for the wallpaper, in screen pixels; null is the whole screen. Applied by ApplyScaling.
@@ -112,7 +114,7 @@ internal sealed class Player : IDisposable
     // the copy is shown with them, whatever colour tags its encoder wrote.
     public async Task Load(string path, bool paused, bool sound, string? soundFrom = null, string? colors = null)
     {
-        Sound = sound; Colors = colors;
+        Sound = sound; Colors = colors; copy = soundFrom != null;
         await Start();
         if (soundFrom != audioFiles)
         {
@@ -147,12 +149,13 @@ internal sealed class Player : IDisposable
         var window = Window;
         var box = Box(window, Area);
         bool boxed = box != window;
-        var (width, height, fps) = Scaling == "tile" || MaxFps > 0 ? await MediaInfo(Loaded) : default;
+        var (width, height, fps) = Scaling == "tile" || MaxFps > 0 || copy ? await MediaInfo(Loaded) : default;
         if (Scaling == "tile" && width > 0 && height > 0)
         {
             if (width >= box.Width && height >= box.Height) { unscaled = "yes"; align = "-1"; }
             else tile = TileGraph(width, height, box.Width, box.Height);
         }
+        else if (PixelForPixel(Scaling, copy, new Size(width, height), box.Size, boxed)) unscaled = "yes";
         int step = FrameStep(fps, MaxFps);
         var vf = FilterChain(step > 1 ? $"framestep={step}" : "", tile);
         if (Colors?.Split(':') is [var matrix, var levels, var primaries, var gamma])
@@ -169,6 +172,13 @@ internal sealed class Player : IDisposable
         for (int i = 0; i < Sides.Length; i++) await Set("video-margin-ratio-" + Sides[i], Number(Math.Clamp(margins[i], 0, 0.95)));
         await Set("vf", vf);
     }
+    // A lighter copy is made to just cover the screen (Optimizer.PlanFor) with the pixels the player would draw from
+    // the original. In fill mode it is shown pixel for pixel, its overhang cut evenly like mpv's own fill does: mpv's
+    // fill size can be a pixel larger than the copy (2135x1200 for a 2134x1200 copy on 1920x1200, 1367x768 on
+    // 1360x768), which resamples, and softens, the whole picture. In an area and in the other modes mpv scales.
+    public static bool PixelForPixel(string scaling, bool copy, Size media, Size box, bool boxed) =>
+        copy && scaling == "fill" && !boxed && media.Width >= box.Width && media.Height >= box.Height
+        && (media.Width - box.Width <= 2 || media.Height - box.Height <= 2);
     static string Number(double value) => Math.Round(value, 6).ToString(CultureInfo.InvariantCulture);
     async Task Set(string name, string value)
     {

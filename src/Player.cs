@@ -28,6 +28,7 @@ internal sealed class Player : IDisposable
     public int MaxFps { get; set; }
     // The file actually playing: the wallpaper itself or its lighter copy.
     public string? Loaded { get; private set; }
+    string? Colors;
     // Repeat the file endlessly; off when wallpapers change at the end of each video.
     public bool Loop { get; set; } = true;
     // Part of the screen for the wallpaper, in screen pixels; null is the whole screen. Applied by ApplyScaling.
@@ -107,9 +108,11 @@ internal sealed class Player : IDisposable
     string LoopValue => Loop ? "inf" : "no";
     // soundFrom: the original of a lighter copy, which has no sound of its own; its soundtrack plays as an
     // extra track, chosen by aid=auto like the file's own one.
-    public async Task Load(string path, bool paused, bool sound, string? soundFrom = null)
+    // colors: for a lighter copy, how the player read the original's colours ("matrix:levels:primaries:gamma");
+    // the copy is shown with them, whatever colour tags its encoder wrote.
+    public async Task Load(string path, bool paused, bool sound, string? soundFrom = null, string? colors = null)
     {
-        Sound = sound;
+        Sound = sound; Colors = colors;
         await Start();
         if (soundFrom != audioFiles)
         {
@@ -152,6 +155,8 @@ internal sealed class Player : IDisposable
         }
         int step = FrameStep(fps, MaxFps);
         var vf = FilterChain(step > 1 ? $"framestep={step}" : "", tile);
+        if (Colors?.Split(':') is [var matrix, var levels, var primaries, var gamma])
+            vf = $"format=colormatrix={matrix}:colorlevels={levels}:primaries={primaries}:gamma={gamma}" + (vf.Length > 0 ? "," + vf : "");
         bool stretch = Scaling == "stretch";
         // mpv ignores the margins without keepaspect: in an area a stretched picture gets the area's proportions instead.
         await Set("keepaspect", stretch && !boxed ? "no" : "yes");

@@ -28,6 +28,9 @@ internal sealed class Optimizer : IDisposable
         // The graphics card could not decode it (the player decoded it on the processor): an H.264 copy is made
         // even when its size and frame rate need none.
         public bool Software { get; set; }
+        // How the player reads the original's colours ("matrix:levels:primaries:gamma" of mpv's video-params):
+        // a copy is shown with exactly these, whatever colour tags its encoder wrote.
+        public string? Colors { get; set; }
     }
     // A video as the optimizer sees it, for the window that lists them.
     public enum State { Unknown, Light, Kept, Waiting, Working, Ready, Failed }
@@ -37,14 +40,20 @@ internal sealed class Optimizer : IDisposable
     // Graphics card encoders first (NVIDIA, AMD, Intel). Media Foundation is the Windows way to the same hardware
     // (through the graphics driver, so it also works where FFmpeg's NVENC needs a newer driver), and last its
     // software encoder, which works everywhere but on the processor. Options a driver does not know are skipped.
-    static readonly (string Name, string Codec, string Options)[] Encoders =
+    // Bitrate: the encoder also gets b= (bits per second, see BitrateFor). Media Foundation always passes a mean
+    // bitrate to the driver, FFmpeg's default of 200 kbit/s unless one is set, and a driver without a quality mode
+    // encodes with it: copies came out blurred and dull. Quick Sync falls back to it the same way.
+    static readonly (string Name, string Codec, string Options, bool Bitrate)[] Encoders =
     [
-        ("NVIDIA NVENC", "h264_nvenc", "preset=p5,tune=hq,rc=vbr,cq=21,b=0,spatial-aq=1"),
-        ("AMD AMF", "h264_amf", "quality=quality,rc=cqp,qp_i=20,qp_p=22,qp_b=24"),
-        ("Intel Quick Sync", "h264_qsv", "preset=slower,global_quality=21"),
-        ("Windows (видеокарта)", "h264_mf", "hw_encoding=1,rate_control=quality,quality=80"),
-        ("Windows (процессор)", "h264_mf", "hw_encoding=0,rate_control=quality,quality=80"),
+        ("NVIDIA NVENC", "h264_nvenc", "preset=p5,tune=hq,rc=vbr,cq=21,b=0,spatial-aq=1", false),
+        ("AMD AMF", "h264_amf", "quality=quality,rc=cqp,qp_i=20,qp_p=22,qp_b=24", false),
+        ("Intel Quick Sync", "h264_qsv", "preset=slower,global_quality=21", true),
+        ("Windows (видеокарта)", "h264_mf", "hw_encoding=1,rate_control=u_vbr", true),
+        ("Windows (процессор)", "h264_mf", "hw_encoding=0,rate_control=u_vbr", true),
     ];
+    // About 0.08 bit per pixel of every frame kept: generous for an encoder of a graphics card at screen size.
+    public static long BitrateFor(Plan plan, double fps) =>
+        Math.Max(2_000_000L, (long)(plan.Width * (double)plan.Height * (fps > 0 ? fps / plan.Step : 30) * 0.08));
     // Only these files are ever deleted, even when the folder falls back to the shared temporary folder.
     static readonly Regex Own = new(@"^[0-9A-F]{32}(\.test)?\.mp4(\.part|\.log)?$");
     static readonly Regex Noise = new(@"\]\[vd\]|AVHW|hwaccel|no frame!");
@@ -136,8 +145,16 @@ internal sealed class Optimizer : IDisposable
         plan = p;
         return CopyName(key, p);
     }
+    // CopyVersion: copies of an older way of making them are made again (2: sharper scaling, enough bitrate).
+    const string CopyVersion = "2";
     string CopyName(string key, Plan plan) =>
-        Path.Combine(folder, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{key}|{plan.Width}x{plan.Height}|{plan.Step}")))[..32] + ".mp4");
+        Path.Combine(folder, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{key}|{plan.Width}x{plan.Height}|{plan.Step}|{CopyVersion}")))[..32] + ".mp4");
+    // The original's colours for the player to show its copy with, or null.
+    public string? ColorsOf(string path)
+    {
+        if (SourceKey(path) is not { } key) return null;
+        lock (sync) return index.TryGetValue(key, out var probe) ? probe.Colors : null;
+    }
     // A video is known by its contents (Fingerprints: its size and its first and last 64 KB), so a renamed file
     // or one moved to another set keeps its copy. When the file cannot be read, its path stands in.
     static string? SourceKey(string path)
@@ -215,11 +232,13 @@ internal sealed class Optimizer : IDisposable
         for (int i = 0; i < videos.Count; i++)
         {
             if (SourceKey(videos[i]) is not { } key) continue;
-            bool known;
-            lock (sync) known = index.ContainsKey(key);
-            if (known) continue;
+            Probe? known;
+            lock (sync) index.TryGetValue(key, out known);
+            // Checked before colours were kept: read again, keeping what is known about it.
+            if (known != null && (known.Colors != null || known.Failed && known.Width == 0)) continue;
             Say($"Проверка видео: {i + 1} из {videos.Count}…");
             var probe = await Read(videos[i], token);
+            if (known != null && !probe.Failed) { probe.Failed = known.Failed; probe.FailedWith = known.FailedWith; probe.Software = known.Software; }
             lock (sync) { index[key] = probe; SaveIndex(); }
         }
         // Copies that another encoder could not make get one more try once this session's encoder is known.
@@ -319,6 +338,11 @@ internal sealed class Optimizer : IDisposable
             if (await Encode(path, test, plan, codec, true, null, token)) { encoder = codec; return true; }
         return false;
     }
+    double FpsOf(string path)
+    {
+        if (SourceKey(path) is not { } key) return 0;
+        lock (sync) return index.TryGetValue(key, out var probe) ? probe.Fps : 0;
+    }
     // A file that failed with an encoder other than the one found now.
     bool Retry(string path)
     {
@@ -371,7 +395,14 @@ internal sealed class Optimizer : IDisposable
                         if (value.ValueKind == JsonValueKind.String) gamma = value.GetString() ?? "";
                         else await Task.Delay(100, token);
                     }
-                    return new Probe { Width = (int)width, Height = (int)height, Fps = fps, Keep = rotate % 360 != 0 || gamma is "pq" or "hlg" };
+                    var colors = new List<string>();
+                    foreach (var name in new[] { "colormatrix", "colorlevels", "primaries" })
+                        if (await Value(pipe, "video-params/" + name) is { ValueKind: JsonValueKind.String } part && part.GetString() is { Length: > 0 } text && text != "auto") colors.Add(text);
+                    return new Probe
+                    {
+                        Width = (int)width, Height = (int)height, Fps = fps, Keep = rotate % 360 != 0 || gamma is "pq" or "hlg",
+                        Colors = colors.Count == 3 && gamma.Length > 0 && gamma != "auto" ? string.Join(":", colors.Append(gamma)) : ""
+                    };
                 }
                 catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException && !token.IsCancellationRequested) { }
             }
@@ -385,10 +416,12 @@ internal sealed class Optimizer : IDisposable
     {
         var part = output + ".part";
         var pipe = $"wallsets-encode-{Environment.ProcessId}-{Interlocked.Increment(ref requests)}";
-        var graph = (plan.Step > 1 ? $"framestep={plan.Step}," : "") + $"scale={plan.Width}:{plan.Height}:flags=bicubic";
+        // Lanczos keeps thin dark outlines dark and sharp; the filtering avoids the jagged steps of the quick
+        // scaling the player does on the fly. Full chroma precision keeps colours clean at their edges.
+        var graph = (plan.Step > 1 ? $"framestep={plan.Step}," : "") + $"scale={plan.Width}:{plan.Height}:flags=lanczos+accurate_rnd+full_chroma_int";
         // Only the picture: the player takes the sound from the original file. It also avoids an mpv 0.41 hang when
         // a soundtrack starts a little after the picture.
-        var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--aid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options, "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
+        var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--aid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options + (Encoders[codec].Bitrate ? ",b=" + BitrateFor(plan, FpsOf(path)) : ""), "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
         // A test keeps mpv's log: the reason an encoder does not work goes to errors.log.
         var log = output + ".log";
         if (test) { args.Add("--length=1"); args.Add("--log-file=" + log); }

@@ -67,6 +67,8 @@ internal static class SelfTests
                 && Optimizer.PlanFor(1366, 768, 30, screen, 30) == null && Optimizer.PlanFor(0, 0, 30, screen, 30) == null
                 && Optimizer.PlanFor(1280, 720, 30, screen, 30, reencode: true) == new Optimizer.Plan(1280, 720, 1),
                 "Lighter copies: scaled to cover the screen and to the frame-rate limit; files that are already light get none, unless the graphics card cannot decode them");
+            Check(Optimizer.BitrateFor(new Optimizer.Plan(2560, 1440, 2), 60) == 8_847_360 && Optimizer.BitrateFor(new Optimizer.Plan(1280, 720, 1), 24) == 2_000_000,
+                "Encoders that need a bitrate get about 0.08 bit per pixel of every kept frame, at least 2 Mbit/s");
             var box = (string type, int size) => { var b = new byte[size]; System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(b, (uint)size); System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4); return b; };
             var mp4 = Path.Combine(Path.GetTempPath(), "wallsets-self-test-" + Environment.ProcessId + ".mp4");
             File.WriteAllBytes(mp4, [.. box("ftyp", 24), .. box("moov", 40), .. box("mdat", 100)]);

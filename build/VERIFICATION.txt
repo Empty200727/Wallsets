@@ -232,3 +232,25 @@ Update 2026-11-09 (2): dark theme, copies for videos the graphics card cannot de
   video decoded on the processor (and not H.264) gets an H.264 copy even when size and frame rate need
   none. PASS the bundled mpv 0.41 reports hwdec-current and current-tracks/video/codec.
 PASS Built-in self-tests under Wine 9.0: 34 checks.
+
+Update 2026-11-10: copies blurred and dull (user's 3840x2160 60 fps anime video, untagged colours)
+Findings:
+- FFmpeg's Media Foundation encoder always passes avctx->bit_rate to the driver (MF_MT_AVG_BITRATE,
+  AVEncCommonMeanBitRate); Wallsets set none, so 200 kbit/s (libavcodec default) went in, and a driver
+  without a quality mode encodes with it. At 1366x768 a 200 kbit/s copy measures sharpness 5.5 against 8.4
+  for a normal one (2.7 vs 6.2 at 1440p).
+- The player's quick scaling (dscale=bilinear, correct-downscaling=no) keeps outlines darker but jagged:
+  at 1366x768 sharpness 9.54 / 2nd-percentile luma 36.8 for the original on the GPU against 8.35 / 41.0 for a
+  bicubic copy; lanczos gives 8.88 / 40.9 at 768p and is sharper than the GPU at 1080p and 1440p.
+- mfenc sets no colour attributes, so the driver decides the VUI colour tags; a copy tagged BT.601 is shown
+  as BT.601 by mpv (tested), dulling oranges and reds of a BT.709 original.
+Changes: lanczos+accurate_rnd+full_chroma_int scaling; b= (0.08 bit per pixel per kept frame, at least
+2 Mbit/s) for Media Foundation (rate_control=u_vbr) and Quick Sync; the probe keeps mpv's colormatrix,
+colorlevels, primaries and gamma of the original, and a copy plays behind mpv's format filter with them;
+copy version 2, so every copy is made again once.
+PASS bundled mpv 0.41 under Wine: the lanczos flags and b= are accepted; format=colormatrix=bt.709:... turns
+video-out-params of a BT.601-tagged copy into BT.709, also chained with the framestep filter.
+PASS test build under Wine: colours of every video recorded (bt.709:limited:bt.709:bt.1886, one srgb); all
+8 copies made again under version 2.
+PASS Built-in self-tests under Wine 9.0: 35 checks (new: bitrate for encoders that need one).
+NOT CHECKED: Media Foundation and NVENC output on real hardware.

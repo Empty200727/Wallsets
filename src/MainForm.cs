@@ -847,7 +847,7 @@ internal sealed class MainForm : Form
         if (!File.Exists(path)) { ScheduleScan(); return; }
         autoPaused = ShouldAutoPause();
         var source = Source(path);
-        try { await player.Load(source, userPaused || autoPaused, VideoSound(file), source == path ? null : path); }
+        try { await player.Load(source, userPaused || autoPaused, VideoSound(file), source == path ? null : path, source == path ? null : optimizer.ColorsOf(path)); }
         catch { playbackFault = true; player.Stop(); music.Stop(); throw; }
         current = file; position = index; currentCopy = CopyAt(index); videoLeft = null;
         try { await ApplySound(); } catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException) { Program.Log(ex); }
@@ -883,7 +883,7 @@ internal sealed class MainForm : Form
     {
         if (!player.Running || current == null) return;
         var source = Source(current.Path);
-        if (source != player.Loaded) await player.Load(source, userPaused || autoPaused, VideoSound(current), source == current.Path ? null : current.Path);
+        if (source != player.Loaded) await player.Load(source, userPaused || autoPaused, VideoSound(current), source == current.Path ? null : current.Path, source == current.Path ? null : optimizer.ColorsOf(current.Path));
         else await player.ApplyScaling();
     }
     async Task Next()

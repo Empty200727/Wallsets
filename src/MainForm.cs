@@ -352,6 +352,8 @@ internal sealed class MainForm : Form
     internal List<string> OptimizedCopies => optimizer.CopiesFor(settings.MaxFps);
     internal string OptimizerStatus => optimizer.Status;
     internal List<Optimizer.Item> OptimizerItems => optimizer.Items();
+    // A video that could not be lightened is tried again at once, carefully.
+    internal void RetryOptimize(string path) => optimizer.RetryNow(path);
     internal void SetTheme(string theme) { settings.Theme = theme; Save(); }
     internal void SetAutoPause(bool on) { settings.AutoPause = on; Save(); CheckAutoPause(); }
     internal void SetAnyWindowPause(bool on) { settings.PauseOnAnyWindow = on; Save(); CheckAutoPause(); }

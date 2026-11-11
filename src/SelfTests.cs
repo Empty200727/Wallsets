@@ -73,6 +73,17 @@ internal static class SelfTests
             Check(Optimizer.ScaleGraph(new Optimizer.Plan(1366, 768, 2), true) == "framestep=2,scale=1366:768:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none,format=nv12"
                 && Optimizer.ScaleGraph(new Optimizer.Plan(1920, 1080, 2), false) == "framestep=2,format=nv12" && Optimizer.ScaleGraph(new Optimizer.Plan(1280, 720, 1), false) == "format=nv12",
                 "Copies are scaled with the player's own two-tap sampling (16-bit fast_bilinear, no dither) and given to the encoder as NV12; a copy of the original size is not scaled");
+            Check(!Optimizer.CopyTooShort(59.9, 60) && Optimizer.CopyTooShort(30, 60) && !Optimizer.CopyTooShort(0, 0) && !Optimizer.CopyTooShort(118, 120)
+                && Optimizer.CopyTooShort(100, 120) && !Optimizer.CopyTooShort(8.5, 10) && Optimizer.CopyTooShort(7.9, 10),
+                "A copy made on a retry counts only when it is about as long as the original (2 s or 5% less at most)");
+            Check(Optimizer.ErrorLines(["[   0.027][e][vd] Failed to create D3D11 Device", "[   0.030][e][ffmpeg] h264_qsv: Error creating a MFX session: -9.",
+                    "[   0.031][v][cplayer] Starting playback", "[   0.032][f][vo/lavc] Could not initialize encoder.", "[   0.033][e][ffmpeg] h264_qsv: Error creating a MFX session: -9."])
+                .SequenceEqual(["[e][ffmpeg] h264_qsv: Error creating a MFX session: -9.", "[f][vo/lavc] Could not initialize encoder."]),
+                "The reason a copy failed is taken from mpv's errors, without decoder noise or repeats");
+            Check(Optimizer.Summary([("x264, видеокарта", "коротко"), ("x264, процессор", "коротко")]) == "коротко (так при всех попытках: 2)"
+                && Optimizer.Summary([("x264, видеокарта", "коротко")]) == "коротко (x264, видеокарта)"
+                && Optimizer.Summary([("A", "одно"), ("B", "другое")]) == "A: одно; B: другое" && Optimizer.Summary([]).StartsWith("ни один кодировщик"),
+                "A failed retry names one reason when every attempt ended the same way, otherwise each attempt");
             Check(Player.PixelForPixel("fill", true, new Size(2134, 1200), new Size(1920, 1200), false) && Player.PixelForPixel("fill", true, new Size(1366, 768), new Size(1360, 768), false)
                 && Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1920, 1080), false) && !Player.PixelForPixel("fill", false, new Size(3840, 2160), new Size(1920, 1080), false)
                 && !Player.PixelForPixel("fit", true, new Size(2134, 1200), new Size(1920, 1200), false) && !Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1280, 720), true)

@@ -31,10 +31,14 @@ internal sealed class Optimizer : IDisposable
         // How the player reads the original's colours ("matrix:levels:primaries:gamma" of mpv's video-params):
         // a copy is shown with exactly these, whatever colour tags its encoder wrote.
         public string? Colors { get; set; }
+        // Seconds; a copy made on a retry must be about as long.
+        public double Duration { get; set; }
+        // Why the copy could not be made, for the optimizer window (the full story is in errors.log).
+        public string? Reason { get; set; }
     }
     // A video as the optimizer sees it, for the window that lists them.
     public enum State { Unknown, Light, Kept, Waiting, Working, Ready, Failed }
-    public readonly record struct Item(string Path, State State, int Percent);
+    public readonly record struct Item(string Path, State State, int Percent, string? Reason = null);
     public readonly record struct Plan(int Width, int Height, int Step);
     static readonly HashSet<string> Videos = new(".mp4 .mkv .webm .mov .avi .m4v .wmv .mpg .mpeg .ts".Split(' '), StringComparer.OrdinalIgnoreCase);
     // Graphics card encoders first (NVIDIA, AMD, Intel), each in its constant-quality mode. When none of them works
@@ -88,6 +92,8 @@ internal sealed class Optimizer : IDisposable
     // The video being encoded and how far it is.
     string? working;
     int percent;
+    // A video that could not be lightened and is to be tried again carefully, asked in the optimizer window.
+    string? urgent;
     // Copies without a video since this time (Environment.TickCount64); used by the worker only.
     readonly Dictionary<string, long> orphans = new(StringComparer.OrdinalIgnoreCase);
     bool cleanupPlanned;
@@ -133,6 +139,13 @@ internal sealed class Optimizer : IDisposable
     }
     // Settings changed: the copy being made may be the wrong one, so it is dropped and the list is checked again.
     public void Restart() { lock (sync) pass?.Cancel(); wake.Release(); }
+    // A video that could not be lightened is tried again at once, carefully (see Careful). A copy being made for
+    // another video is stopped and made again later.
+    public void RetryNow(string path)
+    {
+        lock (sync) { urgent = path; pass?.Cancel(); }
+        wake.Release();
+    }
 
     // The lighter copy of a wallpaper when it is ready, otherwise the file itself.
     public string Resolve(string path)
@@ -235,6 +248,14 @@ internal sealed class Optimizer : IDisposable
         lock (sync) list = files;
         if (list.Count == 0) { Say("Ждёт списка обоев…"); return; }
         if (!File.Exists(engine)) { Say("Нет файла engine\\mpv.exe."); return; }
+        string? retry;
+        lock (sync) retry = urgent;
+        if (retry != null)
+        {
+            // It stays asked for until it is done, so a pass stopped in the middle tries it again first.
+            await Careful(retry, token);
+            lock (sync) if (urgent == retry) urgent = null;
+        }
         var videos = list.Where(f => Videos.Contains(Path.GetExtension(f))).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         Migrate(videos);
         // Sizes and frame rates first: a short helper player for each file not seen before.
@@ -291,7 +312,7 @@ internal sealed class Optimizer : IDisposable
                 if (!await Detect(path, plan, token))
                 {
                     // Either no encoder works or this file cannot be read: two files in a row decide.
-                    Fail(path, "Нет рабочего кодировщика H.264 для файла ", null);
+                    Fail(path, "Нет рабочего кодировщика H.264 для файла " + path, null, "ни один кодировщик не справился даже с одной секундой этого видео");
                     if (++misses < 2) continue;
                     encoder = Encoders.Length;
                 }
@@ -300,8 +321,8 @@ internal sealed class Optimizer : IDisposable
             working = path; percent = 0;
             try
             {
-                if (await Encode(path, copy, plan, encoder, false, value => { percent = value; Say($"Облегчение видео {number}: «{name}» — {value}%" + Using); }, token)) Ready?.Invoke(path);
-                else Fail(path, $"Кодировщик {Encoders[encoder].Name} не смог облегчить файл ", Encoders[encoder].Name + Revision);
+                if (await Encode(path, copy, plan, encoder, false, "auto-copy", value => { percent = value; Say($"Облегчение видео {number}: «{name}» — {value}%" + Using); }, token) is not { } reason) Ready?.Invoke(path);
+                else Fail(path, $"Кодировщик {Encoders[encoder].Name} не смог облегчить файл {path}: {reason}", Encoders[encoder].Name + Revision, $"{Encoders[encoder].Name}: {reason}");
             }
             finally { working = null; }
         }
@@ -310,10 +331,11 @@ internal sealed class Optimizer : IDisposable
         lock (sync) failed = videos.Count(v => SourceKey(v) is { } k && index.TryGetValue(k, out var p) && p.Failed);
         long size = OwnFiles().Where(keep.Contains).Sum(f => new FileInfo(f).Length);
         var ru = CultureInfo.GetCultureInfo("ru-RU");
-        var text = wanted.Count == 0
-            ? "Тяжёлых видео нет: все не больше экрана" + (maxFps > 0 ? $" и не чаще {maxFps} кадров/с." : ".")
-            : $"Готово: облегчено {wanted.Count(File.Exists)} видео, копии занимают " + (size >= 1L << 30 ? (size / (double)(1L << 30)).ToString("0.0", ru) + " ГБ." : (size >> 20) + " МБ.");
-        if (failed > 0) text += $" Не удалось облегчить: {failed} (они играют как есть, подробности в errors.log).";
+        // Failed videos are not among the wanted copies: with nothing else to do there are heavy videos all the same.
+        var text = wanted.Count > 0
+            ? $"Готово: облегчено {wanted.Count(File.Exists)} видео, копии занимают " + (size >= 1L << 30 ? (size / (double)(1L << 30)).ToString("0.0", ru) + " ГБ." : (size >> 20) + " МБ.")
+            : failed == 0 ? "Тяжёлых видео нет: все не больше экрана" + (maxFps > 0 ? $" и не чаще {maxFps} кадров/с." : ".") : "";
+        if (failed > 0) text += (text.Length > 0 ? " " : "") + $"Не удалось облегчить: {failed} (они играют как есть; нажмите на такое видео в окне облегчения, чтобы попробовать ещё раз).";
         Say(text + (wanted.Count > 0 ? Using : "") + DriverHint);
     }
     // Leftovers of stopped encodes go at once. A copy whose video is gone (deleted, changed, or the screen size
@@ -342,11 +364,91 @@ internal sealed class Optimizer : IDisposable
     // Tries the encoders in order on one second of the video and keeps the first that makes a finished MP4.
     async Task<bool> Detect(string path, Plan plan, CancellationToken token)
     {
-        var test = Path.Combine(folder, Convert.ToHexString(RandomNumberGenerator.GetBytes(16)) + ".test.mp4");
         for (int codec = 0; codec < Encoders.Length; codec++)
-            if (await Encode(path, test, plan, codec, true, null, token)) { encoder = codec; return true; }
+            if (await Test(path, plan, codec, token)) { encoder = codec; return true; }
         return false;
     }
+    // One second of the video with one encoder; why it did not work goes to errors.log.
+    async Task<bool> Test(string path, Plan plan, int codec, CancellationToken token)
+    {
+        var test = Path.Combine(folder, Convert.ToHexString(RandomNumberGenerator.GetBytes(16)) + ".test.mp4");
+        if (await Encode(path, test, plan, codec, true, "auto-copy", null, token) is not { } reason) return true;
+        Program.Log(new IOException($"Кодировщик {Encoders[codec].Name} не подошёл: {reason}"));
+        return false;
+    }
+
+    // Asked in the optimizer window for a video that could not be lightened. More careful than a pass: the video is
+    // read again; every encoder that manages one second of it gets its turn (the one that failed on it last), first
+    // with the graphics card decoding the original and then with the processor decoding it, since a file the card's
+    // decoder trips over is common; a copy counts only when a helper player opens it and finds the right size and
+    // about the length of the original. Each failed attempt goes to errors.log with mpv's own reason.
+    async Task Careful(string path, CancellationToken token)
+    {
+        var name = Path.GetFileName(path);
+        if (SourceKey(path) is not { } key) return;
+        working = path; percent = 0;
+        try
+        {
+            Say($"Повторное облегчение «{name}»: проверка видео…");
+            Probe? old;
+            lock (sync) index.TryGetValue(key, out old);
+            var probe = await Read(path, token);
+            if (old != null) probe.Software = old.Software;
+            lock (sync) { index[key] = probe; SaveIndex(); }
+            if (probe.Failed)
+            {
+                Fail(path, "Повторно: проигрыватель не смог открыть видео " + path, null, "проигрыватель не смог открыть видео: файл повреждён или его формат не поддерживается");
+                Say($"«{name}» не облегчено: проигрыватель не смог открыть видео.");
+                return;
+            }
+            if (CopyFor(path, out var plan) is not { } copy) { Say($"«{name}» облегчать не нужно: оно не больше экрана и не чаще ограничения кадров."); return; }
+            var failedLast = old?.FailedWith;
+            var order = Enumerable.Range(0, Encoders.Length).OrderBy(c => failedLast == Encoders[c].Name + Revision ? 1 : 0).ToList();
+            var reasons = new List<(string Attempt, string Reason)>();
+            foreach (var codec in order)
+            {
+                var encoderName = Encoders[codec].Name;
+                Say($"Повторное облегчение «{name}»: проверка кодировщика {encoderName}…");
+                if (!await Test(path, plan, codec, token)) continue;
+                if (encoder < 0 || encoder >= Encoders.Length) encoder = codec;
+                foreach (var (hwdec, how) in new[] { ("auto-copy", "декодирует видеокарта"), ("no", "декодирует процессор") })
+                {
+                    percent = 0;
+                    var reason = await Encode(path, copy, plan, codec, false, hwdec, value => { percent = value; Say($"Повторное облегчение «{name}» ({encoderName}, {how}): {value}%"); }, token)
+                        ?? await Verify(copy, plan, probe.Duration, token);
+                    if (reason == null)
+                    {
+                        Say($"«{name}» облегчено со второй попытки: {encoderName}, {how}.");
+                        Ready?.Invoke(path);
+                        return;
+                    }
+                    try { File.Delete(copy); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                    Program.Log(new IOException($"Повторно, {encoderName}, {how}: не удалось облегчить файл {path}: {reason}"));
+                    reasons.Add(($"{encoderName}, {how}", reason));
+                }
+            }
+            var summary = Summary(reasons);
+            Fail(path, $"Повторно не удалось облегчить файл {path}: {summary}", encoder >= 0 && encoder < Encoders.Length ? Encoders[encoder].Name + Revision : null, summary);
+            Say($"«{name}» не облегчено и со второй попытки: оно играет как есть. Подробности в errors.log.");
+        }
+        finally { working = null; }
+    }
+    // What went wrong on a careful retry: one reason when every attempt ended the same way.
+    internal static string Summary(List<(string Attempt, string Reason)> attempts) =>
+        attempts.Count == 0 ? "ни один кодировщик не справился даже с одной секундой этого видео"
+        : attempts.Select(a => a.Reason).Distinct().Count() == 1 ? attempts[0].Reason + (attempts.Count > 1 ? $" (так при всех попытках: {attempts.Count})" : $" ({attempts[0].Attempt})")
+        : string.Join("; ", attempts.Select(a => $"{a.Attempt}: {a.Reason}"));
+    // A finished copy is opened by a helper player: it must have the planned size and about the original's length.
+    async Task<string?> Verify(string copy, Plan plan, double duration, CancellationToken token)
+    {
+        var made = await Read(copy, token);
+        if (made.Failed) return "проигрыватель не смог открыть готовую копию";
+        if (made.Width != plan.Width || made.Height != plan.Height) return $"у копии размер {made.Width}×{made.Height} вместо {plan.Width}×{plan.Height}";
+        return CopyTooShort(made.Duration, duration) ? $"копия короче оригинала: {made.Duration:0.#} с из {duration:0.#} с — возможно, файл видео повреждён" : null;
+    }
+    // Shorter than the original by more than 2 seconds and 5%: the encode stopped early. A soundtrack longer than the
+    // picture makes the original a little longer than its copy, which has no sound.
+    internal static bool CopyTooShort(double copy, double original) => original > 0 && copy < original - Math.Max(2, original * 0.05);
     Probe? ProbeOf(string path)
     {
         if (SourceKey(path) is not { } key) return null;
@@ -357,10 +459,11 @@ internal sealed class Optimizer : IDisposable
     {
         lock (sync) return SourceKey(path) is { } key && index.TryGetValue(key, out var probe) && probe.Failed && probe.FailedWith != null;
     }
-    void Fail(string path, string reason, string? encoderName)
+    // message goes to errors.log; reason is shown in the optimizer window.
+    void Fail(string path, string message, string? encoderName, string reason)
     {
-        Program.Log(new IOException(reason + path));
-        lock (sync) { if (SourceKey(path) is { } key && index.TryGetValue(key, out var probe)) { probe.Failed = true; probe.FailedWith = encoderName; } SaveIndex(); }
+        Program.Log(new IOException(message));
+        lock (sync) { if (SourceKey(path) is { } key && index.TryGetValue(key, out var probe)) { probe.Failed = true; probe.FailedWith = encoderName; probe.Reason = reason; } SaveIndex(); }
     }
     // Every video of the wallpaper list and what happens to it, in the list's order.
     public List<Item> Items()
@@ -371,11 +474,15 @@ internal sealed class Optimizer : IDisposable
         foreach (var path in list.Where(f => Videos.Contains(Path.GetExtension(f))).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             Probe? probe = null;
+            string? retry;
             if (SourceKey(path) is { } key) lock (sync) index.TryGetValue(key, out probe);
-            var state = probe == null ? State.Unknown : probe.Failed ? State.Failed : probe.Keep ? State.Kept
-                : CopyFor(path, out _) is not { } copy ? State.Light : File.Exists(copy) ? State.Ready
-                : string.Equals(path, working, StringComparison.OrdinalIgnoreCase) ? State.Working : State.Waiting;
-            result.Add(new Item(path, state, state == State.Working ? percent : 0));
+            lock (sync) retry = urgent;
+            bool now = string.Equals(path, working, StringComparison.OrdinalIgnoreCase);
+            // A video tried again shows as being worked on from the moment it is asked for.
+            var state = now || string.Equals(path, retry, StringComparison.OrdinalIgnoreCase) ? State.Working
+                : probe == null ? State.Unknown : probe.Failed ? State.Failed : probe.Keep ? State.Kept
+                : CopyFor(path, out _) is not { } copy ? State.Light : File.Exists(copy) ? State.Ready : State.Waiting;
+            result.Add(new Item(path, state, now ? percent : 0, probe?.Failed == true ? probe.Reason : null));
         }
         return result;
     }
@@ -395,7 +502,7 @@ internal sealed class Optimizer : IDisposable
                 {
                     double width = await Number(pipe, "current-tracks/video/demux-w"), height = await Number(pipe, "current-tracks/video/demux-h");
                     if (width <= 0 || height <= 0) continue;
-                    double rotate = await Number(pipe, "current-tracks/video/demux-rotate"), fps = await Number(pipe, "current-tracks/video/demux-fps");
+                    double rotate = await Number(pipe, "current-tracks/video/demux-rotate"), fps = await Number(pipe, "current-tracks/video/demux-fps"), duration = await Number(pipe, "duration");
                     // The colour curve is known once the first frame is decoded.
                     var gamma = "";
                     for (int j = 0; j < 20 && gamma.Length == 0; j++)
@@ -409,7 +516,7 @@ internal sealed class Optimizer : IDisposable
                         if (await Value(pipe, "video-params/" + name) is { ValueKind: JsonValueKind.String } part && part.GetString() is { Length: > 0 } text && text != "auto") colors.Add(text);
                     return new Probe
                     {
-                        Width = (int)width, Height = (int)height, Fps = fps, Keep = rotate % 360 != 0 || gamma is "pq" or "hlg",
+                        Width = (int)width, Height = (int)height, Fps = fps, Duration = duration, Keep = rotate % 360 != 0 || gamma is "pq" or "hlg",
                         Colors = colors.Count == 3 && gamma.Length > 0 && gamma != "auto" ? string.Join(":", colors.Append(gamma)) : ""
                     };
                 }
@@ -437,9 +544,10 @@ internal sealed class Optimizer : IDisposable
             resize ? $"scale={plan.Width}:{plan.Height}:flags=fast_bilinear+accurate_rnd,format=yuv420p16le,scale=flags=accurate_rnd:sws_dither=none" : "",
             "format=nv12",
         }.Where(part => part.Length > 0));
-    // Encoding mode of mpv: the graphics card decodes, every n-th frame is kept and scaled, the encoder writes
-    // an MP4 next to the final name, which it gets only when it is complete. A test encodes 1 second.
-    async Task<bool> Encode(string path, string output, Plan plan, int codec, bool test, Action<int>? progress, CancellationToken token)
+    // Encoding mode of mpv: the graphics card decodes (hwdec "auto-copy"; "no" decodes on the processor), every n-th
+    // frame is kept and scaled, the encoder writes an MP4 next to the final name, which it gets only when it is
+    // complete. A test encodes 1 second. Returns null when the copy is made, otherwise why not (mpv's own errors).
+    async Task<string?> Encode(string path, string output, Plan plan, int codec, bool test, string hwdec, Action<int>? progress, CancellationToken token)
     {
         var part = output + ".part";
         var pipe = $"wallsets-encode-{Environment.ProcessId}-{Interlocked.Increment(ref requests)}";
@@ -447,10 +555,11 @@ internal sealed class Optimizer : IDisposable
         var graph = ScaleGraph(plan, probe == null || probe.Width != plan.Width || probe.Height != plan.Height);
         // Only the picture: the player takes the sound from the original file. It also avoids an mpv 0.41 hang when
         // a soundtrack starts a little after the picture.
-        var args = new List<string> { "--hwdec=auto-copy", "--sid=no", "--aid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options + (Encoders[codec].Bitrate ? ",b=" + BitrateFor(plan, probe?.Fps ?? 0) : ""), "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
-        // A test keeps mpv's log: the reason an encoder does not work goes to errors.log.
+        var args = new List<string> { "--hwdec=" + hwdec, "--sid=no", "--aid=no", "--o=" + part, "--of=mp4", "--ofopts=movflags=+faststart", "--ovc=" + Encoders[codec].Codec, "--ovcopts=" + Encoders[codec].Options + (Encoders[codec].Bitrate ? ",b=" + BitrateFor(plan, probe?.Fps ?? 0) : ""), "--vf=" + Player.FilterChain(graph), "--input-ipc-server=" + pipe };
+        // mpv's log gives the reason when the copy cannot be made; it is deleted afterwards.
         var log = output + ".log";
-        if (test) { args.Add("--length=1"); args.Add("--log-file=" + log); }
+        args.Add("--log-file=" + log);
+        if (test) args.Add("--length=1");
         args.Add("--"); args.Add(path);
         var process = Start([.. args]);
         try
@@ -486,11 +595,13 @@ internal sealed class Optimizer : IDisposable
             }
             if (!(stalled || process.ExitCode == 0) || !Complete(part))
             {
-                if (test) Explain(codec, log);
-                return false;
+                var errors = Errors(log);
+                var what = stalled ? $"пережатие остановилось на {Math.Max(0, last):0}% и две минуты не продвигалось"
+                    : process.ExitCode != 0 ? $"mpv завершился с кодом {process.ExitCode}" : "файл копии не дописан до конца";
+                return errors.Length > 0 ? $"{what}: {errors}" : what + ".";
             }
             if (!test) File.Move(part, output, true);
-            return true;
+            return null;
         }
         finally
         {
@@ -501,20 +612,23 @@ internal sealed class Optimizer : IDisposable
     }
     // "The minimum required Nvidia driver for nvenc is 610.00 or newer" -> "610.00".
     internal static string? DriverFrom(string line) => DriverNeeded.Match(line) is { Success: true } m ? m.Groups[1].Value : null;
-    // Errors from mpv's log of a failed test, and the NVIDIA driver version NVENC asks for.
-    void Explain(int codec, string log)
+    // The last errors of mpv's log of a failed encode ("" when there are none), and the NVIDIA driver version NVENC
+    // asks for.
+    string Errors(string log)
     {
         try
         {
-            // Messages of the video decoder (its hardware part falls back to the processor on its own) are left out.
-            var all = File.Exists(log) ? File.ReadLines(log).Where(l => (l.Contains("][e][") || l.Contains("][f][")) && !Noise.IsMatch(l))
-                .Select(l => l[(l.IndexOf("][", l.IndexOf(']')) + 1)..].Trim()).Distinct().ToList() : [];
-            foreach (var line in all) if (DriverFrom(line) is { } version) driver = version;
-            var lines = all.TakeLast(5).ToList();
-            Program.Log(new IOException($"Кодировщик {Encoders[codec].Name} не подошёл" + (lines.Count > 0 ? ": " + string.Join(" | ", lines) : ".")));
+            var lines = ErrorLines(File.Exists(log) ? File.ReadLines(log) : []);
+            foreach (var line in lines) if (DriverFrom(line) is { } version) driver = version;
+            return string.Join(" | ", lines.TakeLast(5));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return ""; }
     }
+    // Errors and fatal messages, without their time. Messages of the video decoder (its hardware part falls back to
+    // the processor on its own) are left out.
+    internal static List<string> ErrorLines(IEnumerable<string> log) =>
+        log.Where(l => (l.Contains("][e][") || l.Contains("][f][")) && !Noise.IsMatch(l))
+            .Select(l => l[(l.IndexOf("][", l.IndexOf(']')) + 1)..].Trim()).Distinct().ToList();
     // A finished MP4: its top-level boxes fill the file exactly and include the index (moov) and the data
     // (mdat). The muxer writes the index last, so a file cut off while it was written has none.
     internal static bool Complete(string path)

@@ -300,3 +300,29 @@ profile, color_range tv, colorspace bt709. Against the player's drawing of the o
 48.35 dB, outlines 0.33 levels lighter, saturation ratio 0.9994, mean brightness +0.10 (lanczos copy of
 update 1: 42.00 dB, 1.27 levels). The 1-second detection run succeeds.
 NOT CHECKED: Media Foundation with NV12 on real hardware; video-unscaled on the real desktop.
+
+Update 2026-11-11: retrying a video that could not be lightened
+The user: quality of copies now indistinguishable from the original. A failed video had no way to be tried
+again; a click on it in the optimizer window should offer it, ideally with a more careful attempt. The user's
+errors.log: "Кодировщик Intel Quick Sync не смог облегчить файл ..." with no reason (full encodes kept no log).
+Changes:
+- Optimizer window: a click (or Enter) on a tile with "ошибка" asks (MessageBox, Yes/No) to try again; the
+  tile's tooltip and the question show the reason. With lightening off it says so instead.
+- Optimizer.RetryNow / Careful: the pass in progress is stopped (its copy is made again later); the video is
+  read again (size, frame rate, colours, now also duration); every encoder that passes the 1-second test gets its
+  turn, the one that failed on this video last; each makes the copy with hwdec=auto-copy, then hwdec=no; a copy
+  counts only when a helper player opens it with the planned size and no more than max(2 s, 5%) shorter than the
+  original. Each failed attempt is logged with mpv's errors; identical reasons are merged into one.
+- Every encode keeps mpv's log while it runs, so a failed full encode also logs mpv's errors, and the reason
+  is kept in the index (Probe.Reason) for the window. Status: "Тяжёлых видео нет" no longer shown when the only
+  heavy videos failed; the failure note points to the retry.
+PASS Built-in self-tests under Wine 9.0: 40 checks (new: retry length check, mpv error lines, reason summary).
+PASS Wallsets under Wine on Xvfb 1366x768 with the user's 3840x2160 60 fps video (x264 works, the hardware and
+     Media Foundation encoders do not under Wine): the video marked as failed by x264 shows "ошибка" with the
+     reason in its tooltip; a click shows the question; after "Yes" NVENC, AMF, Quick Sync and both Media
+     Foundation encoders fail their test (logged with mpv's reasons), x264 last makes the copy, the check passes
+     and the tile moves to "Облегчены".
+PASS A 33.4 s video cut to half its bytes (index at the front): a normal pass makes a 16.6 s copy; marked failed and
+     retried, both x264 attempts are rejected ("копия короче оригинала: 16.6 с из 33.4 с"), the short copies are
+     deleted, the tile returns to "ошибка" with one merged reason, and the pass does not retry it again.
+NOT CHECKED: the dialog on Windows (Wine shows Yes/No; Windows shows its own language).

@@ -51,6 +51,10 @@ internal sealed class OptimizerForm : Form
         layout.Controls.Add(note, 0, 4); layout.SetColumnSpan(note, 2);
         Controls.Add(layout);
 
+        // A video that could not be lightened: a click (or Enter) offers to try it again.
+        todo.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) AskRetry(); };
+        todo.ItemActivated += (_, _) => AskRetry();
+
         main.StateChanged += Changed;
         FormClosed += (_, _) => main.StateChanged -= Changed;
         Shown += (_, _) => { done.UpdateMetrics(); todo.UpdateMetrics(); Fill(); };
@@ -91,7 +95,7 @@ internal sealed class OptimizerForm : Form
         todo.SetItems(rest.Select(i => i.State switch
         {
             Optimizer.State.Working => Tile(i, i.Percent + "%", false, "Сейчас пережимается"),
-            Optimizer.State.Failed => Tile(i, "ошибка", true, "Не удалось облегчить: играет оригинал (подробности в errors.log)"),
+            Optimizer.State.Failed => Tile(i, "ошибка", true, "Не удалось облегчить: играет оригинал." + (i.Reason is { Length: > 0 } reason ? "\n" + Shorten(reason) : "") + "\nНажмите, чтобы попробовать ещё раз."),
             Optimizer.State.Unknown => Tile(i, "?", false, "Ещё не проверено"),
             _ => Tile(i, null, false, "В очереди на облегчение"),
         }));
@@ -108,4 +112,31 @@ internal sealed class OptimizerForm : Form
     }
     static ThumbnailItem Tile(Optimizer.Item item, string? badge, bool alert, string tip) =>
         new(item.Path, "", item.Path, 0, badge, alert, tip);
+    static string Shorten(string text) => text.Length <= 300 ? text : text[..300] + "…";
+
+    bool asking;
+    // Asked once per click; the double-click's second click lands on the question.
+    void AskRetry()
+    {
+        if (asking || todo.SelectedIndex < 0) return;
+        var path = todo.Items[todo.SelectedIndex].Path;
+        if (main.OptimizerItems.FirstOrDefault(i => string.Equals(i.Path, path, StringComparison.OrdinalIgnoreCase)) is not { State: Optimizer.State.Failed } item) return;
+        asking = true;
+        try
+        {
+            var name = Path.GetFileName(path);
+            if (!main.Settings.Optimize)
+            {
+                MessageBox.Show(this, $"Не удалось облегчить «{name}». Облегчение сейчас выключено: включите его в настройках, чтобы попробовать ещё раз.", "Облегчение видео", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            var text = $"Не удалось облегчить «{name}», сейчас играет оригинал."
+                + (item.Reason is { Length: > 0 } reason ? "\n\nПричина: " + Shorten(reason) : "")
+                + "\n\nПопробовать ещё раз, тщательнее? Видео проверится заново, по очереди будут испробованы все кодировщики "
+                + "(с декодированием на видеокарте и на процессоре), а готовая копия — проверена на размер и длину. "
+                + "Видео, которое облегчается сейчас, начнётся заново после этого.";
+            if (MessageBox.Show(this, text, "Облегчение видео", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) { main.RetryOptimize(path); Fill(); }
+        }
+        finally { asking = false; }
+    }
 }

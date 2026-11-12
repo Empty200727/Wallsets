@@ -33,6 +33,9 @@ internal static class Ui
     public static readonly Font Strong = new("Segoe UI Semibold", 10f);
     public static readonly Font Heading = new("Segoe UI Semibold", 11.5f);
     public static Font Icons(float size) => new(Program.IconFont, size);
+    // Pause and play signs of the icon font: the pause button of the main window, the mini remote and the
+    // "Обои - пауза" desktop shortcut all show these, so they always look alike.
+    public const string PauseGlyph = "\uE769", PlayGlyph = "\uE768";
 
     public static GraphicsPath RoundedPath(Rectangle r, int radius)
     {

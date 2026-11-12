@@ -130,21 +130,20 @@ internal static class Desktop
     }
 
     // ---- Icon files ----
-    // Shortcut icons in the style of the program icon: a white sign on the same teal rounded square.
-    // Pause (two upright bars) and play (a triangle) are drawn as shapes, so they look the same on every
-    // Windows; next and previous come from the icon font. Written once; the version in the name changes
-    // whenever the pictures do, so Explorer never shows an old cached copy.
+    // Shortcut icons in the style of the program icon: a white sign of the icon font on the same teal
+    // rounded square. Pause and play are the very signs of the main window's pause button. Written once;
+    // the version in the name changes whenever the pictures do, so Explorer never shows an old copy.
     static readonly Dictionary<string, string> Signs = new()
     {
-        ["pause"] = "bars",
-        ["resume"] = "triangle",
-        ["next"] = "",
-        ["previous"] = "",
+        ["pause"] = Ui.PauseGlyph,
+        ["resume"] = Ui.PlayGlyph,
+        ["next"] = "\uE893",
+        ["previous"] = "\uE892",
     };
     static readonly object iconLock = new();
     static string IconFile(string id)
     {
-        var path = Path.Combine(Program.DataFolder("icons"), id + ".v3.ico");
+        var path = Path.Combine(Program.DataFolder("icons"), id + ".v4.ico");
         lock (iconLock)
         {
             if (File.Exists(path)) return path;
@@ -181,30 +180,28 @@ internal static class Desktop
         // The gradient reaches a pixel past the square, so its edge rows do not wrap to the other colour.
         using var fill = new LinearGradientBrush(RectangleF.Inflate(r, 0, 1), Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86), LinearGradientMode.Vertical);
         g.FillPath(fill, shape);
-        float middle = size / 2f;
-        if (sign == "bars")
-        {
-            // Whole pixels, so the bars stay sharp at 16 px.
-            float height = MathF.Round(size * .44f), width = MathF.Max(2, MathF.Round(size * .13f)), gap = MathF.Max(2, MathF.Round(size * .11f));
-            float top = MathF.Round(middle - height / 2), left = MathF.Round(middle - width - gap / 2);
-            foreach (var x in new[] { left, left + width + gap })
-            {
-                if (size < 48) { g.FillRectangle(Brushes.White, x, top, width, height); continue; }
-                using var bar = Ui.RoundedPath(Rectangle.Round(new RectangleF(x, top, width, height)), (int)(width * .3f));
-                g.FillPath(Brushes.White, bar);
-            }
-        }
-        else if (sign == "triangle")
-        {
-            // Pointing right, moved a little right of the middle so it looks centred.
-            float height = size * .48f, width = height * .88f, left = middle - width / 2 + size * .03f;
-            g.FillPolygon(Brushes.White, new[] { new PointF(left, middle - height / 2), new PointF(left + width, middle), new PointF(left, middle + height / 2) });
-        }
-        else
+        if (Program.HasIconFont || sign is not (Ui.PauseGlyph or Ui.PlayGlyph))
         {
             using var font = new Font(Program.IconFont, size * .42f, GraphicsUnit.Pixel);
             using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString(sign, font, Brushes.White, new RectangleF(0, size * .03f, size, size), format);
+        }
+        else
+        {
+            // No icon font (not seen on Windows 10 or 11): the same two signs drawn as shapes.
+            float middle = size / 2f;
+            if (sign == Ui.PauseGlyph)
+            {
+                float height = MathF.Round(size * .44f), width = MathF.Max(2, MathF.Round(size * .13f)), gap = MathF.Max(2, MathF.Round(size * .11f));
+                float top = MathF.Round(middle - height / 2), left = MathF.Round(middle - width - gap / 2);
+                g.FillRectangle(Brushes.White, left, top, width, height);
+                g.FillRectangle(Brushes.White, left + width + gap, top, width, height);
+            }
+            else
+            {
+                float height = size * .48f, width = height * .88f, left = middle - width / 2 + size * .03f;
+                g.FillPolygon(Brushes.White, new[] { new PointF(left, middle - height / 2), new PointF(left + width, middle), new PointF(left, middle + height / 2) });
+            }
         }
         return bitmap;
     }

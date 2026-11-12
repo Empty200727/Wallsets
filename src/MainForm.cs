@@ -74,7 +74,7 @@ internal sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
 
         previous = Ui.IconButton("", "", tips, () => Run(Previous), 13);
-        pause = Ui.IconButton("", "", tips, TogglePause, 14);
+        pause = Ui.IconButton(Ui.PauseGlyph, "", tips, TogglePause, 14);
         next = Ui.IconButton("", "", tips, () => Run(Next), 13);
         BuildLayout();
         BuildTray();
@@ -633,7 +633,7 @@ internal sealed class MainForm : Form
     }
     void UpdateStatus()
     {
-        pause.Text = userPaused ? "" : "";
+        pause.Text = userPaused ? Ui.PlayGlyph : Ui.PauseGlyph;
         pause.AccessibleName = userPaused ? "Продолжить" : "Пауза";
         trayPause.Text = userPaused ? "Продолжить" : "Пауза";
         if (floatingPause != null) floatingPause.Text = pause.Text;

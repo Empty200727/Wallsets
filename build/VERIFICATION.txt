@@ -117,14 +117,16 @@ MEASURE Start until playback, old order vs new order (12 changes each): the same
      (about 0.2 s, or about 2.2 s when the audio output reopens in this container), +0.05 s with --ao=null.
 Icons: src/app.ico rewritten with classic 32-bit bitmaps for 16-128 px and PNG only for 256 px (the
 same pictures, compared pixel by pixel); the exe carries them (RT_ICON 1-8 bitmaps, 9 PNG).
-Shortcut icons are written the same way to .cache/icons/*.v3.ico; "Живые обои" now takes its icon from
-app.v3.ico instead of Wallsets.exe, and Explorer is notified (SHChangeNotify) after a shortcut is made.
+Shortcut icons are written the same way to .cache/icons/*.v4.ico; "Живые обои" now takes its icon from
+app.v4.ico instead of Wallsets.exe, and Explorer is notified (SHChangeNotify) after a shortcut is made.
 Checked under Wine 9.0 (an emulation, not real Windows) with the packaged dist/Wallsets.zip:
 PASS All self-tests, including the new ones for the icon file layout and the program icon.
 PASS Shortcuts made with the shell link object; Wallsets --tray, --pause, --pause, --pause, --stop:
-     both pause shortcuts (also a renamed one) switch pause.v3.ico <-> resume.v3.ico with the matching
+     both pause shortcuts (also a renamed one) switch pause.v4.ico <-> resume.v4.ico with the matching
      description, the "next" shortcut is left alone, after --stop the normal icon is back.
 NOT CHECKED, needs real Windows 10/11: that the stuck video is gone, Explorer redrawing the shortcut
 icon right away, the next/previous glyphs (Segoe fonts are missing in Wine), the old laptop's empty icon.
-Pause shortcut look (on request): one teal background for both states; the pause bars and the play
-triangle are drawn as shapes, not font glyphs. Rendered under Wine at 16-256 px and inspected.
+Pause shortcut look (on request): one teal background for both states and the same signs as the
+main window's pause button (Ui.PauseGlyph / Ui.PlayGlyph of the icon font, shared by both). Only if no
+icon font is installed are they drawn as shapes; that fallback was rendered under Wine and inspected,
+the font glyphs themselves need real Windows.

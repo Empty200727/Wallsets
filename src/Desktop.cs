@@ -80,8 +80,8 @@ internal static class Desktop
     }
 
     // ---- The pause shortcut shows the state ----
-    // While the wallpaper plays, "Обои - пауза" has the pause sign on teal; while it is paused, the play
-    // sign on orange. The two pictures are different files, so Explorer swaps them without stale copies.
+    // While the wallpaper plays, "Обои - пауза" shows the pause sign; while it is paused, the play
+    // triangle. The two pictures are different files, so Explorer swaps them without stale copies.
     static bool paused;
     static Task pauseLook = Task.CompletedTask;
     static readonly object pauseLock = new();
@@ -130,30 +130,31 @@ internal static class Desktop
     }
 
     // ---- Icon files ----
-    // Shortcut icons in the style of the program icon: a glyph of the icon font on a rounded square,
-    // teal like the program icon, orange for the paused wallpaper. Written once; the version in the
-    // name changes whenever the pictures do, so Explorer never shows an old cached copy.
-    static readonly Dictionary<string, (string Glyph, Color Top, Color Bottom)> Glyphs = new()
+    // Shortcut icons in the style of the program icon: a white sign on the same teal rounded square.
+    // Pause (two upright bars) and play (a triangle) are drawn as shapes, so they look the same on every
+    // Windows; next and previous come from the icon font. Written once; the version in the name changes
+    // whenever the pictures do, so Explorer never shows an old cached copy.
+    static readonly Dictionary<string, string> Signs = new()
     {
-        ["pause"] = ("", Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86)),
-        ["resume"] = ("", Color.FromArgb(247, 165, 58), Color.FromArgb(200, 92, 12)),
-        ["next"] = ("", Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86)),
-        ["previous"] = ("", Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86)),
+        ["pause"] = "bars",
+        ["resume"] = "triangle",
+        ["next"] = "",
+        ["previous"] = "",
     };
     static readonly object iconLock = new();
     static string IconFile(string id)
     {
-        var path = Path.Combine(Program.DataFolder("icons"), id + ".v2.ico");
+        var path = Path.Combine(Program.DataFolder("icons"), id + ".v3.ico");
         lock (iconLock)
         {
             if (File.Exists(path)) return path;
             byte[] bytes;
-            if (Glyphs.TryGetValue(id, out var look))
+            if (Signs.TryGetValue(id, out var sign))
             {
                 var images = new List<Bitmap>();
                 try
                 {
-                    foreach (var size in new[] { 16, 20, 24, 32, 40, 48, 64, 256 }) images.Add(GlyphImage(size, look.Glyph, look.Top, look.Bottom));
+                    foreach (var size in new[] { 16, 20, 24, 32, 40, 48, 64, 256 }) images.Add(SignImage(size, sign));
                     bytes = Ico(images);
                 }
                 finally { foreach (var image in images) image.Dispose(); }
@@ -169,18 +170,42 @@ internal static class Desktop
         }
         return path;
     }
-    static Bitmap GlyphImage(int size, string glyph, Color top, Color bottom)
+    static Bitmap SignImage(int size, string sign)
     {
         var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bitmap);
         g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         var r = new RectangleF(size * .04f, size * .04f, size * .92f, size * .92f);
         using var shape = Ui.RoundedPath(Rectangle.Round(r), (int)(size * .2f));
-        using var fill = new LinearGradientBrush(r, top, bottom, LinearGradientMode.Vertical);
+        // The gradient reaches a pixel past the square, so its edge rows do not wrap to the other colour.
+        using var fill = new LinearGradientBrush(RectangleF.Inflate(r, 0, 1), Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86), LinearGradientMode.Vertical);
         g.FillPath(fill, shape);
-        using var font = new Font(Program.IconFont, size * .42f, GraphicsUnit.Pixel);
-        using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-        g.DrawString(glyph, font, Brushes.White, new RectangleF(0, size * .03f, size, size), format);
+        float middle = size / 2f;
+        if (sign == "bars")
+        {
+            // Whole pixels, so the bars stay sharp at 16 px.
+            float height = MathF.Round(size * .44f), width = MathF.Max(2, MathF.Round(size * .13f)), gap = MathF.Max(2, MathF.Round(size * .11f));
+            float top = MathF.Round(middle - height / 2), left = MathF.Round(middle - width - gap / 2);
+            foreach (var x in new[] { left, left + width + gap })
+            {
+                if (size < 48) { g.FillRectangle(Brushes.White, x, top, width, height); continue; }
+                using var bar = Ui.RoundedPath(Rectangle.Round(new RectangleF(x, top, width, height)), (int)(width * .3f));
+                g.FillPath(Brushes.White, bar);
+            }
+        }
+        else if (sign == "triangle")
+        {
+            // Pointing right, moved a little right of the middle so it looks centred.
+            float height = size * .48f, width = height * .88f, left = middle - width / 2 + size * .03f;
+            g.FillPolygon(Brushes.White, new[] { new PointF(left, middle - height / 2), new PointF(left + width, middle), new PointF(left, middle + height / 2) });
+        }
+        else
+        {
+            using var font = new Font(Program.IconFont, size * .42f, GraphicsUnit.Pixel);
+            using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            g.DrawString(sign, font, Brushes.White, new RectangleF(0, size * .03f, size, size), format);
+        }
         return bitmap;
     }
     // ICO file with classic 32-bit bitmaps for the small sizes and PNG only for 256 x 256, the layout

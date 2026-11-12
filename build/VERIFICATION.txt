@@ -95,3 +95,34 @@ NOTE A self-contained single file without compression failed to start under Wine
      alignment); the compressed variant is used, which loads assemblies from memory.
 Found and fixed: when the first playback failed (desktop not ready right after sign-in), the
 folder watchers were not started and settings were not saved.
+
+Update 2026-11-12: stuck video after a change, shortcut icons, pause shortcut shows the state
+Built on Linux (.NET SDK 10.0.115, -p:EnableWindowsTargeting=true): no warnings. Version 1.2.0.
+Stuck video: a new file could stand on its first frame until pause was pressed twice. Not reproduced
+here (no WASAPI/D3D11 on Linux), so the fix copies that workaround and adds a check:
+- Player.Load opens every file paused, sets the scaling filters, waits until mpv reports the file
+  ready (path matches, "seeking" false; at most 3 s) and only then resumes.
+- Player.KeepMoving, once a second while the wallpaper should play: if time-pos has not moved for
+  two checks (and the file is not a still picture), pause and resume; at most three times in a row,
+  logged in errors.log. Every 5 s mpv's pause is compared with Wallsets' state and put right.
+Checked with Player.cs itself against mpv 0.37 on Linux (PulseAudio), through a harness with stub
+Windows calls and an mpv wrapper that swaps only the Windows video output:
+PASS Files with sound (48 and 44.1 kHz), without sound, the same file again, Unicode/emoji paths:
+     ready in 0.05-0.2 s, playing, no pause-and-resume needed at the start.
+PASS Load while paused stays paused; resuming plays.
+PASS mpv paused from outside: EnsurePaused resumes it; KeepMoving restarts it after 3 checks, leaves a
+     playing video and a still picture alone, stops after three attempts in a row.
+PASS Tile mode for 1080p, 4K and 720p files plays after the paused start.
+MEASURE Start until playback, old order vs new order (12 changes each): the same with PulseAudio
+     (about 0.2 s, or about 2.2 s when the audio output reopens in this container), +0.05 s with --ao=null.
+Icons: src/app.ico rewritten with classic 32-bit bitmaps for 16-128 px and PNG only for 256 px (the
+same pictures, compared pixel by pixel); the exe carries them (RT_ICON 1-8 bitmaps, 9 PNG).
+Shortcut icons are written the same way to .cache/icons/*.v2.ico; "Живые обои" now takes its icon from
+app.v2.ico instead of Wallsets.exe, and Explorer is notified (SHChangeNotify) after a shortcut is made.
+Checked under Wine 9.0 (an emulation, not real Windows) with the packaged dist/Wallsets.zip:
+PASS All self-tests, including the new ones for the icon file layout and the program icon.
+PASS Shortcuts made with the shell link object; Wallsets --tray, --pause, --pause, --pause, --stop:
+     both pause shortcuts (also a renamed one) switch pause.v2.ico <-> resume.v2.ico with the matching
+     description, the "next" shortcut is left alone, after --stop the normal icon is back.
+NOT CHECKED, needs real Windows 10/11: that the stuck video is gone, Explorer redrawing the shortcut
+icon right away, icon glyphs (Segoe fonts are missing in Wine), the old laptop's empty icon.

@@ -46,70 +46,204 @@ internal static class Desktop
         void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string file);
         void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string file);
     }
-    public static readonly (string Id, string Name, string Arguments, string Glyph, string Description)[] Shortcuts =
+    public static readonly (string Id, string Name, string Arguments, string Description)[] Shortcuts =
     [
-        ("app", "Живые обои", "", "", "Открыть Wallsets"),
-        ("pause", "Обои - пауза", "--pause", "", "Пауза / продолжить живые обои"),
-        ("next", "Обои - следующие", "--next", "", "Следующие живые обои"),
-        ("previous", "Обои - предыдущие", "--previous", "", "Предыдущие живые обои"),
+        ("app", "Живые обои", "", "Открыть Wallsets"),
+        ("pause", "Обои - пауза", "--pause", "Пауза / продолжить живые обои"),
+        ("next", "Обои - следующие", "--next", "Следующие живые обои"),
+        ("previous", "Обои - предыдущие", "--previous", "Предыдущие живые обои"),
     ];
-    // Creates or updates the shortcut on the desktop and returns its path.
+    // Creates or updates the shortcut on the desktop and returns its path. Every shortcut, the program's
+    // own included, takes its icon from a separate .ico file: a stale or broken entry in the Windows
+    // icon cache for Wallsets.exe then cannot leave the shortcut without an icon.
     public static string CreateShortcut(string id)
     {
         var item = Shortcuts.First(s => s.Id == id);
         var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), item.Name + ".lnk");
+        var (icon, description) = id == "pause" ? PauseLook(paused) : (IconFile(id), item.Description);
         var link = (IShellLinkW)new ShellLink();
         try
         {
             link.SetPath(Exe);
             link.SetArguments(item.Arguments);
             link.SetWorkingDirectory(Program.Root);
-            link.SetDescription(item.Description);
-            if (item.Glyph.Length > 0) link.SetIconLocation(IconFile(id, item.Glyph), 0);
-            else link.SetIconLocation(Exe, 0);
+            link.SetDescription(description);
+            link.SetIconLocation(icon, 0);
             ((IPersistFile)link).Save(path, true);
         }
         finally { Marshal.ReleaseComObject(link); }
+        // Explorer shows the new icon at once; for the program shortcut it also drops the icons it
+        // has cached, which may include an empty one for Wallsets.exe.
+        ShellChanged(SHCNE_UPDATEITEM, path);
+        if (id == "app") ShellChanged(SHCNE_ASSOCCHANGED, null);
         return path;
     }
-    // Shortcut icons in the style of the program icon, drawn from the icon font.
-    static string IconFile(string id, string glyph)
+
+    // ---- The pause shortcut shows the state ----
+    // While the wallpaper plays, "Обои - пауза" has the pause sign on teal; while it is paused, the play
+    // sign on orange. The two pictures are different files, so Explorer swaps them without stale copies.
+    static bool paused;
+    static Task pauseLook = Task.CompletedTask;
+    static readonly object pauseLock = new();
+    static (string Icon, string Description) PauseLook(bool on) => on
+        ? (IconFile("resume"), "Живые обои на паузе. Нажмите, чтобы продолжить")
+        : (IconFile("pause"), "Живые обои идут. Нажмите, чтобы поставить на паузу");
+    // Updates every desktop shortcut that runs Wallsets.exe --pause, in the background and in order.
+    public static Task ShowPaused(bool on)
     {
-        var path = Path.Combine(Program.DataFolder("icons"), id + ".ico");
-        var images = new List<byte[]>();
-        int[] sizes = [16, 24, 32, 48, 64, 256];
-        foreach (var size in sizes)
+        lock (pauseLock)
         {
-            using var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
-            using (var g = Graphics.FromImage(bitmap))
-            {
-                g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                var r = new RectangleF(size * .04f, size * .04f, size * .92f, size * .92f);
-                using var shape = Ui.RoundedPath(Rectangle.Round(r), (int)(size * .2f));
-                using var fill = new LinearGradientBrush(r, Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86), LinearGradientMode.Vertical);
-                g.FillPath(fill, shape);
-                using var font = new Font(Program.IconFont, size * .42f, GraphicsUnit.Pixel);
-                using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                g.DrawString(glyph, font, Brushes.White, new RectangleF(0, size * .03f, size, size), format);
-            }
-            using var png = new MemoryStream(); bitmap.Save(png, ImageFormat.Png); images.Add(png.ToArray());
+            paused = on;
+            return pauseLook = pauseLook.ContinueWith(_ => UpdatePauseShortcuts(on), TaskScheduler.Default);
         }
-        // ICO file with PNG images (supported since Windows Vista).
+    }
+    static void UpdatePauseShortcuts(bool on)
+    {
+        try
+        {
+            var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            if (!Directory.Exists(desktop)) return;
+            var (icon, description) = PauseLook(on);
+            foreach (var file in Directory.EnumerateFiles(desktop, "*.lnk"))
+            {
+                var link = (IShellLinkW)new ShellLink();
+                try
+                {
+                    ((IPersistFile)link).Load(file, 0);
+                    var text = new StringBuilder(1024);
+                    link.GetPath(text, text.Capacity, IntPtr.Zero, 0);
+                    if (!string.Equals(text.ToString(), Exe, StringComparison.OrdinalIgnoreCase)) continue;
+                    text.Clear(); link.GetArguments(text, text.Capacity);
+                    if (text.ToString().Trim() != "--pause") continue;
+                    text.Clear(); link.GetIconLocation(text, text.Capacity, out _);
+                    if (string.Equals(text.ToString(), icon, StringComparison.OrdinalIgnoreCase)) continue;
+                    link.SetIconLocation(icon, 0);
+                    link.SetDescription(description);
+                    ((IPersistFile)link).Save(file, true);
+                    ShellChanged(SHCNE_UPDATEITEM, file);
+                }
+                catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException) { Program.Log(ex); }
+                finally { Marshal.ReleaseComObject(link); }
+            }
+        }
+        catch (Exception ex) { Program.Log(ex); }
+    }
+
+    // ---- Icon files ----
+    // Shortcut icons in the style of the program icon: a glyph of the icon font on a rounded square,
+    // teal like the program icon, orange for the paused wallpaper. Written once; the version in the
+    // name changes whenever the pictures do, so Explorer never shows an old cached copy.
+    static readonly Dictionary<string, (string Glyph, Color Top, Color Bottom)> Glyphs = new()
+    {
+        ["pause"] = ("", Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86)),
+        ["resume"] = ("", Color.FromArgb(247, 165, 58), Color.FromArgb(200, 92, 12)),
+        ["next"] = ("", Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86)),
+        ["previous"] = ("", Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86)),
+    };
+    static readonly object iconLock = new();
+    static string IconFile(string id)
+    {
+        var path = Path.Combine(Program.DataFolder("icons"), id + ".v2.ico");
+        lock (iconLock)
+        {
+            if (File.Exists(path)) return path;
+            byte[] bytes;
+            if (Glyphs.TryGetValue(id, out var look))
+            {
+                var images = new List<Bitmap>();
+                try
+                {
+                    foreach (var size in new[] { 16, 20, 24, 32, 40, 48, 64, 256 }) images.Add(GlyphImage(size, look.Glyph, look.Top, look.Bottom));
+                    bytes = Ico(images);
+                }
+                finally { foreach (var image in images) image.Dispose(); }
+            }
+            else
+            {
+                // The program icon, the same as in Wallsets.exe.
+                using var stream = typeof(Desktop).Assembly.GetManifestResourceStream("Wallsets.app.ico") ?? throw new FileNotFoundException("Wallsets.app.ico");
+                using var copy = new MemoryStream(); stream.CopyTo(copy); bytes = copy.ToArray();
+            }
+            File.WriteAllBytes(path + ".tmp", bytes);
+            File.Move(path + ".tmp", path, true);
+        }
+        return path;
+    }
+    static Bitmap GlyphImage(int size, string glyph, Color top, Color bottom)
+    {
+        var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bitmap);
+        g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        var r = new RectangleF(size * .04f, size * .04f, size * .92f, size * .92f);
+        using var shape = Ui.RoundedPath(Rectangle.Round(r), (int)(size * .2f));
+        using var fill = new LinearGradientBrush(r, top, bottom, LinearGradientMode.Vertical);
+        g.FillPath(fill, shape);
+        using var font = new Font(Program.IconFont, size * .42f, GraphicsUnit.Pixel);
+        using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(glyph, font, Brushes.White, new RectangleF(0, size * .03f, size, size), format);
+        return bitmap;
+    }
+    // ICO file with classic 32-bit bitmaps for the small sizes and PNG only for 256 x 256, the layout
+    // that every part of Windows reads (small PNG images can come out blank in Explorer and shortcuts).
+    internal static byte[] Ico(IReadOnlyList<Bitmap> images)
+    {
+        var entries = new List<(int Size, byte[] Data)>();
+        foreach (var image in images)
+        {
+            int size = image.Width;
+            if (size >= 256)
+            {
+                using var png = new MemoryStream(); image.Save(png, ImageFormat.Png);
+                entries.Add((size, png.ToArray()));
+                continue;
+            }
+            var pixels = new byte[size * size * 4];
+            var data = image.LockBits(new Rectangle(0, 0, size, size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try { for (int y = 0; y < size; y++) Marshal.Copy(data.Scan0 + y * data.Stride, pixels, y * size * 4, size * 4); }
+            finally { image.UnlockBits(data); }
+            int maskStride = (size + 31) / 32 * 4;
+            using var dib = new MemoryStream();
+            using (var w = new BinaryWriter(dib, Encoding.UTF8, true))
+            {
+                // BITMAPINFOHEADER: the height counts the colour rows and the transparency mask.
+                w.Write(40); w.Write(size); w.Write(size * 2); w.Write((short)1); w.Write((short)32);
+                w.Write(0); w.Write(size * size * 4 + maskStride * size); w.Write(0); w.Write(0); w.Write(0); w.Write(0);
+                // Rows bottom-up, BGRA with straight alpha, then the 1-bit mask (1 = transparent).
+                for (int y = size - 1; y >= 0; y--) w.Write(pixels, y * size * 4, size * 4);
+                for (int y = size - 1; y >= 0; y--)
+                {
+                    var row = new byte[maskStride];
+                    for (int x = 0; x < size; x++) if (pixels[(y * size + x) * 4 + 3] == 0) row[x / 8] |= (byte)(0x80 >> (x % 8));
+                    w.Write(row);
+                }
+            }
+            entries.Add((size, dib.ToArray()));
+        }
         using var file = new MemoryStream();
         using (var w = new BinaryWriter(file, Encoding.UTF8, true))
         {
-            w.Write((short)0); w.Write((short)1); w.Write((short)images.Count);
-            int offset = 6 + 16 * images.Count;
-            for (int i = 0; i < images.Count; i++)
+            w.Write((short)0); w.Write((short)1); w.Write((short)entries.Count);
+            int offset = 6 + 16 * entries.Count;
+            foreach (var (size, bytes) in entries)
             {
-                w.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i])); w.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i]));
+                w.Write((byte)(size >= 256 ? 0 : size)); w.Write((byte)(size >= 256 ? 0 : size));
                 w.Write((byte)0); w.Write((byte)0); w.Write((short)1); w.Write((short)32);
-                w.Write(images[i].Length); w.Write(offset); offset += images[i].Length;
+                w.Write(bytes.Length); w.Write(offset); offset += bytes.Length;
             }
-            foreach (var image in images) w.Write(image);
+            foreach (var (_, bytes) in entries) w.Write(bytes);
         }
-        File.WriteAllBytes(path, file.ToArray());
-        return path;
+        return file.ToArray();
+    }
+
+    // ---- Explorer notifications ----
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern void SHChangeNotify(int eventId, uint flags, string? item1, IntPtr item2);
+    const int SHCNE_UPDATEITEM = 0x2000, SHCNE_ASSOCCHANGED = 0x8000000;
+    static void ShellChanged(int what, string? path)
+    {
+        // SHCNF_PATHW for a file, SHCNF_IDLIST without an item for the association change;
+        // SHCNF_FLUSHNOWAIT hands the notice over without waiting for Explorer.
+        try { SHChangeNotify(what, (path != null ? 0x0005u : 0u) | 0x3000u, path, IntPtr.Zero); }
+        catch (Exception ex) { Program.Log(ex); }
     }
 
     // ---- Start with Windows ----

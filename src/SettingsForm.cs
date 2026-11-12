@@ -219,7 +219,7 @@ internal sealed class SettingsForm : Form
         var result = new Label { Font = Ui.Small, ForeColor = Ui.Muted, BackColor = Ui.Surface, AutoSize = false, Size = new Size(s.Width, Ui.S(20)), UseMnemonic = false, Text = "Ярлык появится на рабочем столе; повторное нажатие обновит его." };
         for (int i = 0; i < Desktop.Shortcuts.Length; i++)
         {
-            var (id, name, _, _, description) = Desktop.Shortcuts[i];
+            var (id, name, _, description) = Desktop.Shortcuts[i];
             var button = Ui.TextButton(name, () =>
             {
                 try { Desktop.CreateShortcut(id); result.ForeColor = Ui.Good; result.Text = $"Ярлык «{name}» добавлен на рабочий стол."; }
@@ -231,6 +231,7 @@ internal sealed class SettingsForm : Form
         }
         s.Add(grid, gap: 8);
         s.Add(result, gap: 10);
+        s.Hint("Ярлык «Обои - пауза» показывает состояние: пока обои идут, на нём знак паузы, а на паузе он становится оранжевым со знаком «играть».");
         End(s);
     }
     void Hotkeys()

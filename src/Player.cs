@@ -88,12 +88,29 @@ internal sealed class Player : IDisposable
         finally { gate.Release(); }
     }
 
+    // The new file opens paused: scaling filters are set before it moves, and it is started only once
+    // its first frame and sound are ready, with the same pause-and-resume that got a new file going by
+    // hand when it stood on its first frame on Windows. If it still stands, KeepMoving steps in.
     public async Task Load(string path, bool paused)
     {
         await Start();
-        await Command("set_property", "pause", paused);
+        await Command("set_property", "pause", true);
         await Command("loadfile", path, "replace");
+        lastPosition = null; standing = moving = nudges = 0; still = false;
         await ApplyScaling(path);
+        if (paused) return;
+        await WaitReady(path);
+        await Pause(false);
+    }
+    // Up to three seconds: the file is opened and its first frame (and sound) decoded.
+    async Task WaitReady(string path)
+    {
+        for (int i = 0; i < 60; i++)
+        {
+            var current = await OptionalProperty("path");
+            if (current.ValueKind == JsonValueKind.String && current.GetString() == path && (await OptionalProperty("seeking")).ValueKind == JsonValueKind.False) return;
+            await Task.Delay(50);
+        }
     }
     // Fit, stretch and fill are mpv options. Tile has none: a picture smaller than the screen is repeated
     // by a filter, a larger one is shown at its own size from the top left corner, like in Windows.
@@ -160,7 +177,53 @@ internal sealed class Player : IDisposable
     }
     // Current frame as shown, after scaling filters (used as the Windows background).
     public Task SaveFrame(string file) => Command("screenshot-to-file", file, "video");
-    public Task Pause(bool paused) => Command("set_property", "pause", paused);
+    public async Task Pause(bool paused)
+    {
+        await Command("set_property", "pause", paused);
+        // Resumed playback gets a fresh start before KeepMoving judges it.
+        lastPosition = null; standing = moving = 0;
+        if (!paused && !nudging) nudges = 0;
+    }
+    // Puts mpv's pause back to the wanted state if it differs (a command that failed, or mpv pausing
+    // on its own). Returns true when it had to.
+    public async Task<bool> EnsurePaused(bool paused)
+    {
+        if ((await Command("get_property", "pause")).ValueKind == (paused ? JsonValueKind.True : JsonValueKind.False)) return false;
+        await Pause(paused);
+        return true;
+    }
+
+    // ---- video standing still ----
+    // Position at the last check, checks in a row with and without movement, pause-and-resume steps
+    // taken without the video getting going in between, and whether the file is a still picture.
+    double? lastPosition;
+    int standing, moving, nudges;
+    bool still, nudging;
+    // Called about once a second while the wallpaper should play. If the position has not moved for
+    // two checks, playback is paused and resumed: on Windows a new file could stand on its first frame
+    // until that was done by hand. At most three times in a row; returns true when it stepped in.
+    public async Task<bool> KeepMoving()
+    {
+        if (still || nudges >= 3) return false;
+        var position = await OptionalProperty("time-pos");
+        double? now = position.ValueKind == JsonValueKind.Number ? position.GetDouble() : null;
+        bool moved = now == null || now != lastPosition;
+        lastPosition = now;
+        if (moved)
+        {
+            standing = 0;
+            if (now != null && ++moving >= 5) nudges = 0;
+            return false;
+        }
+        moving = 0;
+        if (++standing < 2) return false;
+        // Pictures (and files without a picture) never move.
+        if ((await OptionalProperty("current-tracks/video/image")).ValueKind != JsonValueKind.False) { still = true; return false; }
+        nudges++; nudging = true;
+        try { await Pause(true); await Task.Delay(150); await Pause(false); }
+        finally { nudging = false; }
+        return true;
+    }
     // "auto" picks the file's soundtrack again, also for the files loaded later; "no" closes the audio output.
     public Task SetSound(bool on) => Command("set_property", "aid", on ? "auto" : "no");
     // mpv's own software volume: it does not change the Windows volume or other programs.

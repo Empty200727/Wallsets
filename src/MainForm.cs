@@ -109,6 +109,8 @@ internal sealed class MainForm : Form
         var displayGuid = new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
         powerNotification = Native.RegisterPowerSettingNotification(Handle, ref displayGuid, 0);
         _ = Task.Run(Server);
+        // Wallsets starts playing: a pause shortcut left with the "paused" icon gets the normal one back.
+        _ = Desktop.ShowPaused(false);
         UpdateSound(); UpdateStatus();
         // Start with the keyboard in the wallpaper grid rather than on the first toolbar button.
         ActiveControl = files;
@@ -507,7 +509,13 @@ internal sealed class MainForm : Form
         if (queue.Count == 0) return;
         await Play(queue[Library.AdjacentIndex(currentFile == null ? -1 : queue.IndexOf(currentFile), queue.Count, -1)]);
     }
-    void TogglePause() => Run(async () => { userPaused = !userPaused; if (player.Running) await player.Pause(userPaused || autoPaused); });
+    void TogglePause() => Run(async () =>
+    {
+        userPaused = !userPaused;
+        // The "Обои - пауза" shortcut on the desktop changes its icon with the state.
+        _ = Desktop.ShowPaused(userPaused);
+        if (player.Running) await player.Pause(userPaused || autoPaused);
+    });
     internal void SetSound(bool on)
     {
         if (settings.Music == on) return;
@@ -582,9 +590,13 @@ internal sealed class MainForm : Form
             nextFrame = Environment.TickCount64 + 30 * 60 * 1000;
             await CaptureFrame();
         }
+        if (!userPaused && !autoPaused && await player.KeepMoving())
+            Program.Log(new IOException("Видео стояло на месте, пауза и продолжение сделаны автоматически: " + Path.GetFileName(currentFile)));
         if (Environment.TickCount64 >= nextHealth)
         {
             nextHealth = Environment.TickCount64 + 5000;
+            if (await player.EnsurePaused(userPaused || autoPaused))
+                Program.Log(new IOException("Состояние паузы проигрывателя расходилось с Wallsets и исправлено: " + Path.GetFileName(currentFile)));
             var idle = await player.Command("get_property", "idle-active");
             var ended = await player.OptionalProperty("eof-reached");
             if (idle.ValueKind == JsonValueKind.True || ended.ValueKind == JsonValueKind.True)
@@ -727,6 +739,7 @@ internal sealed class MainForm : Form
         if (exiting) return;
         exiting = true; Cleanup();
         try { Desktop.RestoreWallpaper(settings); Save(); } catch (Exception ex) { Program.Log(ex); }
+        try { Desktop.ShowPaused(false).Wait(2000); } catch (Exception ex) { Program.Log(ex); }
         Close();
     }
     void Cleanup()

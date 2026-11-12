@@ -37,6 +37,27 @@ internal static class SelfTests
             var graph = tiled[(tiled.IndexOf('%', tiled.IndexOf('%') + 1) + 1)..];
             Check(tiled.StartsWith("lavfi=graph=%" + System.Text.Encoding.UTF8.GetByteCount(graph) + "%") && graph.Contains("hstack=inputs=4") && graph.Contains("vstack=inputs=4") && graph.EndsWith("crop=1920:1080:0:0")
                 && Player.TileFilter(1920, 1080, 1920, 1080) == "lavfi=graph=%18%crop=1920:1080:0:0", "Tile: a small picture is repeated and cut to the screen size");
+            // Icons: classic bitmaps (BITMAPINFOHEADER, bottom-up BGRA, then the transparency mask) for
+            // the small sizes, PNG only for 256; the program icon itself is stored the same way.
+            using (var small = new Bitmap(16, 16)) using (var large = new Bitmap(256, 256))
+            {
+                small.SetPixel(3, 4, Color.FromArgb(255, 10, 20, 30));
+                var ico = Desktop.Ico([small, large]);
+                int at = BitConverter.ToInt32(ico, 6 + 12), largeAt = BitConverter.ToInt32(ico, 22 + 12), pixel = at + 40 + (11 * 16 + 3) * 4;
+                Check(BitConverter.ToInt16(ico, 4) == 2 && ico[6] == 16 && ico[22] == 0 && BitConverter.ToInt32(ico, 6 + 8) == 40 + 16 * 16 * 4 + 4 * 16
+                    && BitConverter.ToInt32(ico, at) == 40 && BitConverter.ToInt32(ico, at + 8) == 32 && BitConverter.ToInt16(ico, at + 14) == 32
+                    && ico[pixel] == 30 && ico[pixel + 1] == 20 && ico[pixel + 2] == 10 && ico[pixel + 3] == 255
+                    && ico[at + 40 + 16 * 16 * 4] == 0xFF && ico[at + 40 + 16 * 16 * 4 + 11 * 4] == 0xEF && ico[largeAt] == 0x89 && ico[largeAt + 1] == (byte)'P', "Icons: small sizes as bitmaps with a transparency mask, 256 as PNG");
+            }
+            using (var stream = typeof(Desktop).Assembly.GetManifestResourceStream("Wallsets.app.ico")!)
+            using (var copy = new MemoryStream())
+            {
+                stream.CopyTo(copy); var app = copy.ToArray();
+                bool classic = true;
+                for (int i = 0; i < BitConverter.ToInt16(app, 4); i++)
+                    classic &= app[6 + 16 * i] == 0 || BitConverter.ToInt32(app, BitConverter.ToInt32(app, 6 + 16 * i + 12)) == 40;
+                Check(classic, "Program icon: every size below 256 is a classic bitmap");
+            }
             var fresh = new Settings();
             Check(fresh.Music && fresh.MusicVolume == 60 && fresh.IntervalSeconds == 50 && !fresh.ShowNames && !fresh.ShowSetNames && fresh.AutoPause && fresh.PauseOnBattery && !fresh.SingleSet,
                 "Fresh install: sound on at 60%, change every 50 s, captions off, both energy-saving pauses on");

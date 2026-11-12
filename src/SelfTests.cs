@@ -96,16 +96,26 @@ internal static class SelfTests
                 var ico = new byte[resource.Length]; resource.ReadExactly(ico);
                 Check(SafeIco(ico) && BitConverter.ToInt16(ico, 4) == 9, "The program icon has plain bitmaps up to 128 px and PNG only at 256 px");
             }
-            foreach (var playing in new[] { true, false })
+            foreach (var look in new[] { "pause", "play", "next", "previous" })
             {
-                var ico = Desktop.IcoFile(size => Desktop.StateIcon(size, playing));
+                var ico = Desktop.IcoFile(size => Desktop.ShortcutIcon(look, size));
                 using var small = new Icon(new MemoryStream(ico), 16, 16);
-                using var big = Desktop.StateIcon(64, playing);
-                // The middle of the icon: between the bars while playing (teal), inside the triangle while paused (white).
-                var middle = big.GetPixel(32, 32);
-                Check(SafeIco(ico) && small.Width == 16 && (playing ? middle.G < 200 && big.GetPixel(25, 32).R == 255 : middle.R == 255),
-                    playing ? "Pause shortcut while the wallpaper plays: two white bars" : "Pause shortcut while the wallpaper is paused: a white triangle");
+                using var big = Desktop.ShortcutIcon(look, 64);
+                bool White(int x, int y) => big.GetPixel(x, y) is { R: 255, G: 255, B: 255 };
+                // pause: white bar left of a teal middle; play: white middle; next: bar on the right (|), triangle on
+                // the left; previous: the other way round.
+                bool shape = look switch
+                {
+                    "pause" => White(25, 32) && !White(32, 32),
+                    "play" => White(32, 32),
+                    "next" => White(44, 20) && !White(34, 20) && White(22, 32),
+                    _ => White(19, 20) && !White(29, 20) && White(41, 32),
+                };
+                Check(SafeIco(ico) && small.Width == 16 && shape, $"Shortcut icon \"{look}\": white shape on the program's teal, bitmaps up to 128 px");
             }
+            Check(Desktop.Replaceable("") && Desktop.Replaceable(@"C:\Wallsets\Wallsets.exe") && Desktop.Replaceable(@"C:\Wallsets\.cache\icons\next.ico")
+                && Desktop.Replaceable(@"C:\Users\a\AppData\Local\Wallsets\icons\pause-1.ico") && !Desktop.Replaceable(@"C:\Icons\my-next.ico")
+                && !Desktop.Replaceable(@"C:\Windows\System32\shell32.dll"), "Shortcut icons are mended unless the user chose an icon of their own");
             Check(Player.PixelForPixel("fill", true, new Size(2134, 1200), new Size(1920, 1200), false) && Player.PixelForPixel("fill", true, new Size(1366, 768), new Size(1360, 768), false)
                 && Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1920, 1080), false) && !Player.PixelForPixel("fill", false, new Size(3840, 2160), new Size(1920, 1080), false)
                 && !Player.PixelForPixel("fit", true, new Size(2134, 1200), new Size(1920, 1200), false) && !Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1280, 720), true)

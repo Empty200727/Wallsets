@@ -54,8 +54,8 @@ internal static class Desktop
         ("previous", "Обои - предыдущие", "--previous", "Предыдущие живые обои"),
     ];
     const string PauseCommand = "--pause";
-    // Creates or updates the shortcut on the desktop and returns its path. The pause shortcut shows the state of the
-    // wallpaper (see ShowPlaying), the others the program icon.
+    // Creates or updates the shortcut on the desktop and returns its path. "Живые обои" shows the program icon, the
+    // commands their own drawn icons (the pause one follows the wallpaper, see ShowPlaying).
     public static string CreateShortcut(string id)
     {
         var item = Shortcuts.First(s => s.Id == id);
@@ -67,28 +67,38 @@ internal static class Desktop
             link.SetArguments(item.Arguments);
             link.SetWorkingDirectory(Program.Root);
             link.SetDescription(item.Description);
-            link.SetIconLocation(item.Arguments == PauseCommand ? PauseIcon(Playing) : Exe, 0);
+            link.SetIconLocation(IconFor(item.Arguments) ?? Exe, 0);
             ((IPersistFile)link).Save(path, true);
         }
         finally { Marshal.ReleaseComObject(link); }
         Changed(path);
         return path;
     }
+    // The drawn icon of a command shortcut; null for "Живые обои" (the program icon).
+    static string? IconFor(string arguments) => arguments.Trim() switch
+    {
+        PauseCommand => DrawnIcon(Playing ? "pause" : "play"),
+        "--next" => DrawnIcon("next"),
+        "--previous" => DrawnIcon("previous"),
+        _ => null,
+    };
 
-    // ---- The pause shortcut shows the state of the wallpaper ----
-    // Two bars while the wallpaper plays (a click pauses it), a triangle while it is paused or Wallsets is off (a click
-    // plays it). Every shortcut on the desktop that runs Wallsets.exe --pause changes, also one the user made or
-    // renamed. Explorer shows the new icon once the shortcut points to another icon file and is told it changed.
+    // ---- Icons of the command shortcuts; the pause one shows the state of the wallpaper ----
+    // Pause: two bars while the wallpaper plays (a click pauses it), a triangle while it is paused or Wallsets is off
+    // (a click plays it). Every shortcut on the desktop that runs Wallsets.exe with a command gets its icon, also one
+    // the user made or renamed, unless the user gave it an icon of their own. Explorer shows the new icon once the
+    // shortcut points to another icon file and is told it changed.
     public static bool Playing { get; private set; } = true;
     static readonly object iconLock = new();
-    // Runs in the background unless wait is set (at exit); the latest state wins.
+    // Runs in the background unless wait is set (at exit); the latest state wins. The first call (at start) also
+    // mends next and previous shortcuts that an earlier version gave the program icon.
     public static void ShowPlaying(bool playing, bool wait = false)
     {
         Playing = playing;
-        void Apply() { lock (iconLock) { try { SetPauseIcons(PauseIcon(Playing)); } catch (Exception ex) { Program.Log(ex); } } }
+        void Apply() { lock (iconLock) { try { SetCommandIcons(); } catch (Exception ex) { Program.Log(ex); } } }
         if (wait) Apply(); else Task.Run(Apply);
     }
-    static void SetPauseIcons(string icon)
+    static void SetCommandIcons()
     {
         foreach (var folder in new[] { Environment.SpecialFolder.DesktopDirectory, Environment.SpecialFolder.CommonDesktopDirectory })
         {
@@ -96,10 +106,10 @@ internal static class Desktop
             if (dir.Length == 0 || !Directory.Exists(dir)) continue;
             foreach (var link in Directory.EnumerateFiles(dir, "*.lnk"))
                 // The desktop of all users is often not writable without administrator rights: such a shortcut stays.
-                try { SetPauseIcon(link, icon); } catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException) { }
+                try { SetCommandIcon(link); } catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException) { }
         }
     }
-    static void SetPauseIcon(string path, string icon)
+    static void SetCommandIcon(string path)
     {
         var link = (IShellLinkW)new ShellLink();
         try
@@ -107,26 +117,31 @@ internal static class Desktop
             ((IPersistFile)link).Load(path, 0);
             var target = new StringBuilder(1024); link.GetPath(target, target.Capacity, IntPtr.Zero, 0);
             var arguments = new StringBuilder(1024); link.GetArguments(arguments, arguments.Capacity);
-            if (!IsWallsets(target.ToString()) || arguments.ToString().Trim() != PauseCommand) return;
+            if (!IsWallsets(target.ToString()) || IconFor(arguments.ToString()) is not { } icon) return;
             var current = new StringBuilder(1024); link.GetIconLocation(current, current.Capacity, out var index);
-            if (index == 0 && string.Equals(current.ToString(), icon, StringComparison.OrdinalIgnoreCase)) return;
+            if (index == 0 && string.Equals(current.ToString(), icon, StringComparison.OrdinalIgnoreCase) || !Replaceable(current.ToString())) return;
             link.SetIconLocation(icon, 0);
             ((IPersistFile)link).Save(path, true);
         }
         finally { Marshal.ReleaseComObject(link); }
         Changed(path);
     }
+    // No icon, the program icon or one of Wallsets' own icons; any other icon was chosen by the user and stays.
+    internal static bool Replaceable(string icon) => icon.Length == 0 || IsWallsets(icon)
+        || string.Equals(System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(icon)), "icons", StringComparison.OrdinalIgnoreCase)
+            && System.IO.Path.GetFileNameWithoutExtension(icon).Split('-')[0] is "pause" or "play" or "next" or "previous";
     // Tells Explorer to read the shortcut again.
     static void Changed(string path) => Native.SHChangeNotify(0x00002000, 0x0005, path, IntPtr.Zero);
     // Drawn once; the number in the name changes with the drawing, so Windows' icon cache never shows an older one.
-    static string PauseIcon(bool playing)
+    static string DrawnIcon(string look)
     {
-        var path = Path.Combine(Program.DataFolder("icons"), (playing ? "pause" : "play") + "-1.ico");
-        if (!File.Exists(path)) File.WriteAllBytes(path, IcoFile(size => StateIcon(size, playing)));
+        var path = Path.Combine(Program.DataFolder("icons"), look + "-1.ico");
+        if (!File.Exists(path)) File.WriteAllBytes(path, IcoFile(size => ShortcutIcon(look, size)));
         return path;
     }
-    // In the colours of the program icon: two white bars (playing) or a white triangle (paused).
-    internal static Bitmap StateIcon(int size, bool playing)
+    // In the colours of the program icon, white shapes: "pause" two bars, "play" a triangle, "next" a triangle and a
+    // bar (▶|), "previous" the same turned round (|◀). Shapes, not an icon font, so every Windows draws them.
+    internal static Bitmap ShortcutIcon(string look, int size)
     {
         var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bitmap);
@@ -135,7 +150,8 @@ internal static class Desktop
         using (var shape = Ui.RoundedPath(Rectangle.Round(r), Math.Max(2, (int)(size * .2f))))
         using (var fill = new LinearGradientBrush(new PointF(0, r.Top), new PointF(0, r.Bottom + 1), Color.FromArgb(51, 163, 150), Color.FromArgb(24, 97, 91)))
             g.FillPath(fill, shape);
-        if (playing)
+        float y = size / 2f;
+        if (look == "pause")
         {
             // On whole pixels, so the bars stay sharp at 16 px.
             int height = (int)Math.Round(size * .46), width = Math.Max(2, (int)Math.Round(size * .13)), gap = Math.Max(2, (int)Math.Round(size * .12));
@@ -144,11 +160,23 @@ internal static class Desktop
             g.FillRectangle(Brushes.White, left, top, width, height);
             g.FillRectangle(Brushes.White, left + width + gap, top, width, height);
         }
-        else
+        else if (look == "play")
         {
             // Pointing right, a little right of the middle so it looks centred.
-            float height = size * .48f, width = height * .87f, x = size / 2f + size * .04f, y = size / 2f;
+            float height = size * .48f, width = height * .87f, x = size / 2f + size * .04f;
             g.FillPolygon(Brushes.White, new[] { new PointF(x - width / 2, y - height / 2), new PointF(x + width / 2, y), new PointF(x - width / 2, y + height / 2) });
+        }
+        else
+        {
+            // A triangle pointing at a bar as tall as it; the bar on whole pixels.
+            bool next = look == "next";
+            int height = (int)Math.Round(size * .44), bar = Math.Max(2, (int)Math.Round(size * .1)), top = (size - height) / 2;
+            float width = height * .82f, left = (size - width - bar) / 2f;
+            int barX = next ? (int)Math.Round(left + width) : (int)Math.Round(left);
+            float tip = next ? barX : barX + bar, back = next ? tip - width : tip + width;
+            g.FillPolygon(Brushes.White, new[] { new PointF(back, top), new PointF(tip, top + height / 2f), new PointF(back, top + height) });
+            g.SmoothingMode = SmoothingMode.None;
+            g.FillRectangle(Brushes.White, barX, top, bar, height);
         }
         return bitmap;
     }

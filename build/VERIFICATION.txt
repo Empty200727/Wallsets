@@ -351,3 +351,15 @@ PASS Wallsets under Wine on Xvfb: the settings button creates "Обои - пау
      switches it to play-1.ico and back; "--stop" leaves play-1.ico; "--pause" with Wallsets off starts it in the
      tray (running, not paused, window hidden) and the shortcut shows pause-1.ico again.
 NOT CHECKED: Explorer redrawing the desktop icon on real Windows; the old laptop's icon (needs that computer).
+
+Update 2026-11-12 (2): next and previous shortcuts lost their icons
+The user: "Обои - следующие" and "Обои - предыдущие" got the program icon in the previous update. Cause: their
+glyphs (U+E893, U+E892 of the icon font) are private-use characters that showed as empty strings in the
+terminal, and update 2026-11-12 took them for "no icon". Change: Desktop.ShortcutIcon draws next (triangle and
+bar) and previous (the same turned round) as shapes in the style of the pause/play icons (no icon font needed),
+icons\next-1.ico and previous-1.ico. The icon updater (start and every pause change) now sets the drawn icon of
+every desktop shortcut running Wallsets.exe --pause/--next/--previous whose icon is empty, the program icon or one
+of Wallsets' own icons (also the older icons\next.ico); an icon the user chose stays.
+PASS Built-in self-tests under Wine 9.0: 46 checks (new: next/previous shapes, which icons may be replaced).
+PASS Under Wine on Xvfb: the previous build made "Обои - следующие.lnk" and "Обои - предыдущие.lnk" with
+     Wallsets.exe as icon; the new build, on start, set next-1.ico and previous-1.ico; pause stayed pause-1.ico.

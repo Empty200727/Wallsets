@@ -54,7 +54,9 @@ internal static class Program
             return;
         }
         using var mutex = new Mutex(true, "Local\\Wallsets-" + Environment.UserName, out var first);
-        if (!first || args.Length > 0 && args[0] is "--stop" or "--next" or "--previous" or "--pause" or "--status" or "--rescan")
+        // "Обои - пауза" while Wallsets is off shows a triangle (play), so it starts Wallsets with the wallpaper.
+        bool pauseStarts = first && args.Length > 0 && args[0] == "--pause";
+        if (!first || args.Length > 0 && args[0] is "--stop" or "--next" or "--previous" or "--status" or "--rescan")
         {
             try
             {
@@ -74,7 +76,7 @@ internal static class Program
         Application.AddMessageFilter(new WheelGuard());
         // The theme is chosen before the first window is made: windows take their colors when they are built.
         Ui.UseTheme(Ui.WantsDark(Settings.Load(SettingsPath).Theme));
-        try { Application.Run(new MainForm(args.Contains("--tray"))); }
+        try { Application.Run(new MainForm(args.Contains("--tray") || pauseStarts)); }
         catch (Exception ex) { Log(ex); MessageBox.Show(ex.Message, "Wallsets", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         // Another theme was chosen: the next Wallsets may start once this one let go of its single-instance lock.
         if (Restart)

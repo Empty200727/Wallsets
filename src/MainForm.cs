@@ -56,6 +56,8 @@ internal sealed class MainForm : Form
     int position = -1, currentCopy;
     // Seconds left of the current video when wallpapers change at the end of each video.
     double? videoLeft;
+    // What the pause shortcut on the desktop shows (null: not set yet).
+    bool? shownPlaying;
     string? lastFrame;
     bool updating, busy, exiting, cleaned, userPaused, autoPaused, locked, displayOff, allowShow;
     long nextChange, nextHealth, nextFrame;
@@ -1030,6 +1032,8 @@ internal sealed class MainForm : Form
     void UpdateStatus()
     {
         pause.Text = userPaused ? "" : "";
+        // The "Обои - пауза" shortcut on the desktop shows the same: two bars while playing, a triangle while paused.
+        if (shownPlaying != !userPaused) { shownPlaying = !userPaused; Desktop.ShowPlaying(!userPaused); }
         pause.AccessibleName = userPaused ? "Продолжить" : "Пауза";
         trayPause.Text = userPaused ? "Продолжить" : "Пауза";
         if (floatingPause != null) floatingPause.Text = pause.Text;
@@ -1139,6 +1143,8 @@ internal sealed class MainForm : Form
     void Cleanup()
     {
         if (cleaned) return;
+        // Wallsets stops: the pause shortcut shows a triangle (it starts Wallsets again).
+        try { Desktop.ShowPlaying(false, wait: true); } catch (Exception ex) { Program.Log(ex); }
         cleaned = exiting = true; timer.Stop(); scanTimer.Stop(); saveTimer.Stop(); pauseCheck.Stop(); cancellation.Cancel(); Save();
         foreach (var w in watchers) w.Dispose(); watchers.Clear();
         SystemEvents.SessionSwitch -= SessionChanged; SystemEvents.DisplaySettingsChanged -= DisplayChanged;

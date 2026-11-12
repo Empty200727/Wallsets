@@ -84,6 +84,28 @@ internal static class SelfTests
                 && Optimizer.Summary([("x264, видеокарта", "коротко")]) == "коротко (x264, видеокарта)"
                 && Optimizer.Summary([("A", "одно"), ("B", "другое")]) == "A: одно; B: другое" && Optimizer.Summary([]).StartsWith("ни один кодировщик"),
                 "A failed retry names one reason when every attempt ended the same way, otherwise each attempt");
+            // Icons: bitmaps up to 128 px and PNG only at 256 (an icon of PNGs alone showed blank on some computers).
+            static bool SafeIco(byte[] ico) => BitConverter.ToInt16(ico, 2) == 1 && Enumerable.Range(0, BitConverter.ToInt16(ico, 4)).All(i =>
+            {
+                int size = ico[6 + 16 * i] == 0 ? 256 : ico[6 + 16 * i], planes = BitConverter.ToInt16(ico, 10 + 16 * i), bits = BitConverter.ToInt16(ico, 12 + 16 * i), at = BitConverter.ToInt32(ico, 18 + 16 * i);
+                bool png = ico[at] == 0x89 && ico[at + 1] == (byte)'P';
+                return planes == 1 && bits == 32 && (size >= 256 ? png : !png && BitConverter.ToInt32(ico, at) == 40 && BitConverter.ToInt32(ico, at + 8) == 2 * size);
+            });
+            using (var resource = typeof(SelfTests).Assembly.GetManifestResourceStream("Wallsets.app.ico")!)
+            {
+                var ico = new byte[resource.Length]; resource.ReadExactly(ico);
+                Check(SafeIco(ico) && BitConverter.ToInt16(ico, 4) == 9, "The program icon has plain bitmaps up to 128 px and PNG only at 256 px");
+            }
+            foreach (var playing in new[] { true, false })
+            {
+                var ico = Desktop.IcoFile(size => Desktop.StateIcon(size, playing));
+                using var small = new Icon(new MemoryStream(ico), 16, 16);
+                using var big = Desktop.StateIcon(64, playing);
+                // The middle of the icon: between the bars while playing (teal), inside the triangle while paused (white).
+                var middle = big.GetPixel(32, 32);
+                Check(SafeIco(ico) && small.Width == 16 && (playing ? middle.G < 200 && big.GetPixel(25, 32).R == 255 : middle.R == 255),
+                    playing ? "Pause shortcut while the wallpaper plays: two white bars" : "Pause shortcut while the wallpaper is paused: a white triangle");
+            }
             Check(Player.PixelForPixel("fill", true, new Size(2134, 1200), new Size(1920, 1200), false) && Player.PixelForPixel("fill", true, new Size(1366, 768), new Size(1360, 768), false)
                 && Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1920, 1080), false) && !Player.PixelForPixel("fill", false, new Size(3840, 2160), new Size(1920, 1080), false)
                 && !Player.PixelForPixel("fit", true, new Size(2134, 1200), new Size(1920, 1200), false) && !Player.PixelForPixel("fill", true, new Size(1920, 1080), new Size(1280, 720), true)

@@ -46,14 +46,16 @@ internal static class Desktop
         void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string file);
         void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string file);
     }
-    public static readonly (string Id, string Name, string Arguments, string Glyph, string Description)[] Shortcuts =
+    public static readonly (string Id, string Name, string Arguments, string Description)[] Shortcuts =
     [
-        ("app", "Живые обои", "", "", "Открыть Wallsets"),
-        ("pause", "Обои - пауза", "--pause", "", "Пауза / продолжить живые обои"),
-        ("next", "Обои - следующие", "--next", "", "Следующие живые обои"),
-        ("previous", "Обои - предыдущие", "--previous", "", "Предыдущие живые обои"),
+        ("app", "Живые обои", "", "Открыть Wallsets"),
+        ("pause", "Обои - пауза", PauseCommand, "Пауза / продолжить живые обои"),
+        ("next", "Обои - следующие", "--next", "Следующие живые обои"),
+        ("previous", "Обои - предыдущие", "--previous", "Предыдущие живые обои"),
     ];
-    // Creates or updates the shortcut on the desktop and returns its path.
+    const string PauseCommand = "--pause";
+    // Creates or updates the shortcut on the desktop and returns its path. The pause shortcut shows the state of the
+    // wallpaper (see ShowPlaying), the others the program icon.
     public static string CreateShortcut(string id)
     {
         var item = Shortcuts.First(s => s.Id == id);
@@ -65,51 +67,141 @@ internal static class Desktop
             link.SetArguments(item.Arguments);
             link.SetWorkingDirectory(Program.Root);
             link.SetDescription(item.Description);
-            if (item.Glyph.Length > 0) link.SetIconLocation(IconFile(id, item.Glyph), 0);
-            else link.SetIconLocation(Exe, 0);
+            link.SetIconLocation(item.Arguments == PauseCommand ? PauseIcon(Playing) : Exe, 0);
             ((IPersistFile)link).Save(path, true);
         }
         finally { Marshal.ReleaseComObject(link); }
+        Changed(path);
         return path;
     }
-    // Shortcut icons in the style of the program icon, drawn from the icon font.
-    static string IconFile(string id, string glyph)
+
+    // ---- The pause shortcut shows the state of the wallpaper ----
+    // Two bars while the wallpaper plays (a click pauses it), a triangle while it is paused or Wallsets is off (a click
+    // plays it). Every shortcut on the desktop that runs Wallsets.exe --pause changes, also one the user made or
+    // renamed. Explorer shows the new icon once the shortcut points to another icon file and is told it changed.
+    public static bool Playing { get; private set; } = true;
+    static readonly object iconLock = new();
+    // Runs in the background unless wait is set (at exit); the latest state wins.
+    public static void ShowPlaying(bool playing, bool wait = false)
     {
-        var path = Path.Combine(Program.DataFolder("icons"), id + ".ico");
-        var images = new List<byte[]>();
-        int[] sizes = [16, 24, 32, 48, 64, 256];
-        foreach (var size in sizes)
+        Playing = playing;
+        void Apply() { lock (iconLock) { try { SetPauseIcons(PauseIcon(Playing)); } catch (Exception ex) { Program.Log(ex); } } }
+        if (wait) Apply(); else Task.Run(Apply);
+    }
+    static void SetPauseIcons(string icon)
+    {
+        foreach (var folder in new[] { Environment.SpecialFolder.DesktopDirectory, Environment.SpecialFolder.CommonDesktopDirectory })
         {
-            using var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
-            using (var g = Graphics.FromImage(bitmap))
-            {
-                g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                var r = new RectangleF(size * .04f, size * .04f, size * .92f, size * .92f);
-                using var shape = Ui.RoundedPath(Rectangle.Round(r), (int)(size * .2f));
-                using var fill = new LinearGradientBrush(r, Color.FromArgb(54, 170, 156), Color.FromArgb(22, 92, 86), LinearGradientMode.Vertical);
-                g.FillPath(fill, shape);
-                using var font = new Font(Program.IconFont, size * .42f, GraphicsUnit.Pixel);
-                using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                g.DrawString(glyph, font, Brushes.White, new RectangleF(0, size * .03f, size, size), format);
-            }
-            using var png = new MemoryStream(); bitmap.Save(png, ImageFormat.Png); images.Add(png.ToArray());
+            var dir = Environment.GetFolderPath(folder);
+            if (dir.Length == 0 || !Directory.Exists(dir)) continue;
+            foreach (var link in Directory.EnumerateFiles(dir, "*.lnk"))
+                // The desktop of all users is often not writable without administrator rights: such a shortcut stays.
+                try { SetPauseIcon(link, icon); } catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException) { }
         }
-        // ICO file with PNG images (supported since Windows Vista).
+    }
+    static void SetPauseIcon(string path, string icon)
+    {
+        var link = (IShellLinkW)new ShellLink();
+        try
+        {
+            ((IPersistFile)link).Load(path, 0);
+            var target = new StringBuilder(1024); link.GetPath(target, target.Capacity, IntPtr.Zero, 0);
+            var arguments = new StringBuilder(1024); link.GetArguments(arguments, arguments.Capacity);
+            if (!IsWallsets(target.ToString()) || arguments.ToString().Trim() != PauseCommand) return;
+            var current = new StringBuilder(1024); link.GetIconLocation(current, current.Capacity, out var index);
+            if (index == 0 && string.Equals(current.ToString(), icon, StringComparison.OrdinalIgnoreCase)) return;
+            link.SetIconLocation(icon, 0);
+            ((IPersistFile)link).Save(path, true);
+        }
+        finally { Marshal.ReleaseComObject(link); }
+        Changed(path);
+    }
+    // Tells Explorer to read the shortcut again.
+    static void Changed(string path) => Native.SHChangeNotify(0x00002000, 0x0005, path, IntPtr.Zero);
+    // Drawn once; the number in the name changes with the drawing, so Windows' icon cache never shows an older one.
+    static string PauseIcon(bool playing)
+    {
+        var path = Path.Combine(Program.DataFolder("icons"), (playing ? "pause" : "play") + "-1.ico");
+        if (!File.Exists(path)) File.WriteAllBytes(path, IcoFile(size => StateIcon(size, playing)));
+        return path;
+    }
+    // In the colours of the program icon: two white bars (playing) or a white triangle (paused).
+    internal static Bitmap StateIcon(int size, bool playing)
+    {
+        var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bitmap);
+        g.SmoothingMode = SmoothingMode.AntiAlias; g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        var r = new RectangleF(size * .04f, size * .04f, size * .92f, size * .92f);
+        using (var shape = Ui.RoundedPath(Rectangle.Round(r), Math.Max(2, (int)(size * .2f))))
+        using (var fill = new LinearGradientBrush(new PointF(0, r.Top), new PointF(0, r.Bottom + 1), Color.FromArgb(51, 163, 150), Color.FromArgb(24, 97, 91)))
+            g.FillPath(fill, shape);
+        if (playing)
+        {
+            // On whole pixels, so the bars stay sharp at 16 px.
+            int height = (int)Math.Round(size * .46), width = Math.Max(2, (int)Math.Round(size * .13)), gap = Math.Max(2, (int)Math.Round(size * .12));
+            int top = (size - height) / 2, left = (size - 2 * width - gap) / 2;
+            g.SmoothingMode = SmoothingMode.None;
+            g.FillRectangle(Brushes.White, left, top, width, height);
+            g.FillRectangle(Brushes.White, left + width + gap, top, width, height);
+        }
+        else
+        {
+            // Pointing right, a little right of the middle so it looks centred.
+            float height = size * .48f, width = height * .87f, x = size / 2f + size * .04f, y = size / 2f;
+            g.FillPolygon(Brushes.White, new[] { new PointF(x - width / 2, y - height / 2), new PointF(x + width / 2, y), new PointF(x - width / 2, y + height / 2) });
+        }
+        return bitmap;
+    }
+    // An .ico file: plain 32-bit bitmaps up to 128 px, which every Windows reads, and PNG at 256 px. Windows reads PNG
+    // reliably only at that size: an icon of PNGs alone (as app.ico was) can show blank on some computers.
+    internal static readonly int[] IconSizes = [16, 20, 24, 32, 40, 48, 64, 128, 256];
+    internal static byte[] IcoFile(Func<int, Bitmap> draw)
+    {
+        var images = new List<(int Size, byte[] Data)>();
+        foreach (var size in IconSizes)
+        {
+            using var bitmap = draw(size);
+            images.Add((size, size >= 256 ? Png(bitmap) : Dib(bitmap)));
+        }
         using var file = new MemoryStream();
         using (var w = new BinaryWriter(file, Encoding.UTF8, true))
         {
             w.Write((short)0); w.Write((short)1); w.Write((short)images.Count);
             int offset = 6 + 16 * images.Count;
-            for (int i = 0; i < images.Count; i++)
+            foreach (var (size, data) in images)
             {
-                w.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i])); w.Write((byte)(sizes[i] >= 256 ? 0 : sizes[i]));
+                w.Write((byte)(size >= 256 ? 0 : size)); w.Write((byte)(size >= 256 ? 0 : size));
                 w.Write((byte)0); w.Write((byte)0); w.Write((short)1); w.Write((short)32);
-                w.Write(images[i].Length); w.Write(offset); offset += images[i].Length;
+                w.Write(data.Length); w.Write(offset); offset += data.Length;
             }
-            foreach (var image in images) w.Write(image);
+            foreach (var (_, data) in images) w.Write(data);
         }
-        File.WriteAllBytes(path, file.ToArray());
-        return path;
+        return file.ToArray();
+    }
+    static byte[] Png(Bitmap bitmap) { using var png = new MemoryStream(); bitmap.Save(png, ImageFormat.Png); return png.ToArray(); }
+    // BITMAPINFOHEADER with twice the height (picture and mask), BGRA rows from the bottom up, then the 1-bit mask
+    // (set where the picture is fully transparent), each mask row padded to 4 bytes.
+    static byte[] Dib(Bitmap bitmap)
+    {
+        int size = bitmap.Width, maskRow = (size + 31) / 32 * 4;
+        var pixels = new byte[size * size * 4];
+        var data = bitmap.LockBits(new Rectangle(0, 0, size, size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try { for (int y = 0; y < size; y++) Marshal.Copy(data.Scan0 + y * data.Stride, pixels, y * size * 4, size * 4); }
+        finally { bitmap.UnlockBits(data); }
+        using var stream = new MemoryStream();
+        using (var w = new BinaryWriter(stream, Encoding.UTF8, true))
+        {
+            w.Write(40); w.Write(size); w.Write(size * 2); w.Write((short)1); w.Write((short)32);
+            w.Write(0); w.Write(size * size * 4 + maskRow * size); w.Write(0); w.Write(0); w.Write(0); w.Write(0);
+            for (int y = size - 1; y >= 0; y--) w.Write(pixels, y * size * 4, size * 4);
+            for (int y = size - 1; y >= 0; y--)
+            {
+                var row = new byte[maskRow];
+                for (int x = 0; x < size; x++) if (pixels[(y * size + x) * 4 + 3] == 0) row[x / 8] |= (byte)(0x80 >> (x % 8));
+                w.Write(row);
+            }
+        }
+        return stream.ToArray();
     }
 
     // ---- Start with Windows ----

@@ -426,7 +426,7 @@ internal sealed class SettingsForm : Form
         s.Heading("Ярлык появится на рабочем столе; повторное нажатие обновит его.");
         for (int i = 0; i < Desktop.Shortcuts.Length; i++)
         {
-            var (id, name, _, _, description) = Desktop.Shortcuts[i];
+            var (id, name, _, description) = Desktop.Shortcuts[i];
             var button = Ui.TextButton(name, () =>
             {
                 try { Desktop.CreateShortcut(id); result.ForeColor = Ui.Good; result.Text = $"Ярлык «{name}» добавлен на рабочий стол."; }

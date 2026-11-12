@@ -7,6 +7,8 @@ internal static class Native
 {
     internal delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr param);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern IntPtr FindWindow(string? cls, string? title);
+    // Tells Explorer that a file changed (SHCNE_UPDATEITEM with a path), so it reads a shortcut and its icon again.
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] internal static extern void SHChangeNotify(int eventId, uint flags, string item1, IntPtr item2);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? cls, string? title);
     [DllImport("user32.dll")] internal static extern bool EnumWindows(EnumWindowsProc callback, IntPtr param);
     [DllImport("user32.dll")] internal static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr param);

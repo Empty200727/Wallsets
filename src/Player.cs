@@ -47,7 +47,7 @@ internal sealed class Player : IDisposable
         job = Native.KillOnCloseJob();
         if (job == IntPtr.Zero) throw new InvalidOperationException("Не удалось создать группу процессов обоев.");
         var start = new ProcessStartInfo(Path.Combine(root, "engine", "mpv.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = root };
-        string[] args = ["--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--loop-file=" + LoopValue, "--aid=" + SoundValue, "--volume=" + Volume, "--volume-max=100", "--audio-client-name=Wallsets", "--hwdec=auto", "--vo=gpu", "--gpu-api=d3d11", "--gpu-context=d3d11", "--profile=fast", "--interpolation=no", "--video-sync=audio", "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=no", "--input-cursor=no", "--cursor-autohide=no", "--stop-screensaver=no", "--image-display-duration=inf", "--keepaspect=" + (Scaling == "stretch" ? "no" : "yes"), "--panscan=" + (Scaling == "fill" ? "1" : "0"), "--terminal=no", "--msg-level=all=warn", "--wid=0", "--input-ipc-server=" + PipeName];
+        string[] args = ["--no-config", "--idle=yes", "--force-window=yes", "--keep-open=yes", "--keep-open-pause=no", "--loop-file=" + LoopValue, "--aid=" + SoundValue, "--volume=" + Volume, "--volume-max=100", "--audio-client-name=Wallsets", "--hwdec=auto", "--vo=gpu", "--gpu-api=d3d11", "--gpu-context=d3d11", "--profile=fast", "--interpolation=no", "--video-sync=audio", "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=no", "--input-cursor=no", "--cursor-autohide=no", "--stop-screensaver=no", "--image-display-duration=inf", "--keepaspect=" + (Scaling == "stretch" ? "no" : "yes"), "--panscan=" + (Scaling == "fill" ? "1" : "0"), "--terminal=no", "--msg-level=all=warn", "--wid=0", "--input-ipc-server=" + PipeName];
         foreach (var arg in args) start.ArgumentList.Add(arg);
         applied.Clear(); audioFiles = null;
         applied["keepaspect"] = Scaling == "stretch" ? "no" : "yes"; applied["panscan"] = Scaling == "fill" ? "1" : "0";
@@ -125,6 +125,10 @@ internal sealed class Player : IDisposable
         await Set("aid", SoundValue);
         await Set("loop-file", LoopValue);
         await Command("loadfile", path, "replace");
+        // Once more for the new file: the pause state is the program's alone (keep-open-pause=no above; with mpv's
+        // default, a video that ended paused mpv itself, which undid the "play" sent just before, and the next
+        // wallpaper in "по длине видео" mode stood still until pause was pressed twice).
+        await Command("set_property", "pause", paused);
         Loaded = path;
         await ApplyScaling();
     }

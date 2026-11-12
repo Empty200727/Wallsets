@@ -326,3 +326,28 @@ PASS A 33.4 s video cut to half its bytes (index at the front): a normal pass ma
      retried, both x264 attempts are rejected ("копия короче оригинала: 16.6 с из 33.4 с"), the short copies are
      deleted, the tile returns to "ошибка" with one merged reason, and the pass does not retry it again.
 NOT CHECKED: the dialog on Windows (Wine shows Yes/No; Windows shows its own language).
+
+Update 2026-11-12: "по длине видео" pause, blank shortcut icon on an old laptop, pause shortcut shows the state
+1) The user: with "по длине видео" the next video does not play until pause is pressed and released.
+   Cause: mpv with keep-open=yes pauses itself at the end of a file (keep-open-pause defaults to yes). Player.Load
+   sends "pause false" and then "loadfile"; between the two IPC requests mpv re-pauses at the old file's end, and
+   the pause carries over to the next file. Reproduced with the bundled mpv 0.41 under Wine (Lua script doing the
+   same, 20 ms between the two commands): default -> next file pause=true, time-pos 0.00 after 1 s;
+   keep-open-pause=no -> pause=false, time-pos 1.02 (also with no gap). Change: --keep-open-pause=no, and the pause
+   state is sent once more after loadfile. eof-reached still becomes true, so "по длине видео" still changes.
+2) The user: on an old laptop the "Живые обои" shortcut, and even "Send to > Desktop" of Wallsets.exe, shows no icon.
+   Every entry of src/app.ico was PNG-compressed (16..256) with planes=0; Windows reads PNG icon images reliably
+   only at 256x256. Change: app.ico rewritten with 32-bit BMP/DIB entries (planes=1, AND mask) for 16..128 and PNG
+   only at 256; every size pixel-identical to before (checked with PIL). README: ie4uinit.exe -show if the
+   icon cache still shows the old blank icon.
+3) The user: the pause shortcut should show the state - two bars while playing, a triangle while paused.
+   Desktop.ShowPlaying: every .lnk on the user's and the common desktop that runs Wallsets.exe --pause gets
+   .cache\icons\pause-1.ico (two white bars) or play-1.ico (white triangle) as its icon, then SHChangeNotify
+   (SHCNE_UPDATEITEM). It follows the pause button (user pause), runs in the background (latest state wins), and
+   at exit sets the triangle. "Wallsets.exe --pause" while Wallsets is off now starts it in the tray, as the
+   triangle promises. Icons are drawn with GDI+ shapes (no icon font needed), bitmaps up to 128 px, PNG at 256.
+PASS Built-in self-tests under Wine 9.0: 43 checks (new: app.ico layout, pause/play shortcut icons).
+PASS Wallsets under Wine on Xvfb: the settings button creates "Обои - пауза.lnk" with pause-1.ico; "--pause" twice
+     switches it to play-1.ico and back; "--stop" leaves play-1.ico; "--pause" with Wallsets off starts it in the
+     tray (running, not paused, window hidden) and the shortcut shows pause-1.ico again.
+NOT CHECKED: Explorer redrawing the desktop icon on real Windows; the old laptop's icon (needs that computer).
